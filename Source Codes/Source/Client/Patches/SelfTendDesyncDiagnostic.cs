@@ -7,33 +7,28 @@ using Verse.AI;
 namespace Multiplayer.Client
 {
     // ---------------------------------------------------------------------------
-    // TEMPORARY DIAGNOSTIC — not a fix.
+    // TEMPORARY DIAGNOSTIC v2 — not a fix.
     //
-    // Purpose: pin the exact value that diverges between host and client during an
-    // automatic self-tend, so the real determinism fix can target the right line.
+    // Test #1 proved the divergence is the tend *eligibility* decision (whether
+    // WorkGiver_Tend issues a self-tend job), not the medicine count/split:
+    // Desync-75, pawn 45554, tick 63362 — the machine VIEWING the pawn's map
+    // issued a self-tend job (GetNextJobID) while the machine NOT viewing it did
+    // not. Medicine was null (medId=-1), so no split was involved.
     //
-    // It logs, on BOTH machines, the three tend decision points that feed the
-    // Thing-ID-vs-Job-ID divergence seen at Desync-69 seq 36:
-    //   1. Medicine.GetMedicineCountToFullyHeal  -> the medicine "count"
-    //   2. WorkGiver_Tend.JobOnThing             -> chosen medicine + count
-    //   3. Pawn_CarryTracker.TryStartCarry       -> the actual split decision
-    //      (count < stackCount => a new Thing ID is allocated)
+    // v2 keeps the v1 logging and adds the eligibility inputs at the decision
+    // point, so the next capture pins the exact value that flips with the view:
+    //   - HealthAIUtility.ShouldBeTendedNowByPlayer(pawn)
+    //   - pawn.health.HasHediffsNeedingTend()
+    //   - count of hediffs that are TendableNow
     //
-    // Every line also records Find.CurrentMap vs the acting pawn's map and the
-    // ticking map's mapTicks, so we can confirm the divergence correlates with
-    // which map each player is viewing (the confirmed trigger).
-    //
-    // Only logs during simulation (not the interface), so the two players' logs
-    // line up by tick and can be diffed directly.
-    //
-    // Toggle with the in-game dev console:  MpSelfTendDiag.Enabled = false;
-    // Remove this whole file once the fix is in.
+    // Only logs during simulation (not the interface). Get BOTH players' Player.log
+    // this time (host's too) so the two sides can be diffed directly.
+    // Toggle: MpSelfTendDiag.Enabled = false;  Remove this file once the fix is in.
     // ---------------------------------------------------------------------------
     public static class MpSelfTendDiag
     {
         public static bool Enabled = true;
 
-        // Only log for humanlike player-faction pawns to cut spam.
         public static bool ShouldLog(Pawn p)
         {
             try
@@ -64,6 +59,39 @@ namespace Multiplayer.Client
             }
             catch (Exception e) { return "ctx-error:" + e.Message; }
         }
+
+        public static int TendableNowCount(Pawn p)
+        {
+            try
+            {
+                int n = 0;
+                var hs = p?.health?.hediffSet?.hediffs;
+                if (hs == null) return -1;
+                for (int i = 0; i < hs.Count; i++)
+                    if (hs[i].TendableNow()) n++;
+                return n;
+            }
+            catch { return -2; }
+        }
+    }
+
+    // NEW in v2 — the eligibility gate. This is the value that flipped with the view.
+    [HarmonyPatch(typeof(HealthAIUtility), nameof(HealthAIUtility.ShouldBeTendedNowByPlayer))]
+    static class MpSelfTendDiag_ShouldBeTended
+    {
+        static void Postfix(Pawn pawn, bool __result)
+        {
+            try
+            {
+                if (!MpSelfTendDiag.ShouldLog(pawn)) return;
+                bool needsTend = false;
+                try { needsTend = pawn.health.HasHediffsNeedingTend(); } catch { }
+                Log.Message($"[MPSELFTEND] ShouldBeTendedNowByPlayer pawn={pawn.thingIDNumber} " +
+                            $"result={__result} needsTendNow={needsTend} tendableNow={MpSelfTendDiag.TendableNowCount(pawn)} " +
+                            MpSelfTendDiag.Ctx(pawn));
+            }
+            catch { }
+        }
     }
 
     [HarmonyPatch(typeof(Medicine), nameof(Medicine.GetMedicineCountToFullyHeal))]
@@ -77,7 +105,7 @@ namespace Multiplayer.Client
                 Log.Message($"[MPSELFTEND] GetMedicineCountToFullyHeal pawn={pawn.thingIDNumber} " +
                             $"count={__result} {MpSelfTendDiag.Ctx(pawn)}");
             }
-            catch { /* never throw into the sim */ }
+            catch { }
         }
     }
 
