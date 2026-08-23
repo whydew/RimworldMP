@@ -1,0 +1,210 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using HarmonyLib;
+using Multiplayer.API;
+using Multiplayer.Common;
+using RimWorld;
+using UnityEngine;
+using Verse;
+using static Multiplayer.Client.SyncSerialization;
+
+namespace Multiplayer.Client
+{
+    public static class SyncDictMisc
+    {
+        internal static SyncWorkerDictionaryTree syncWorkers = new SyncWorkerDictionaryTree()
+        {
+            #region Ignored
+
+            { (SyncWorker sync, ref Event s)  => { } },
+
+            #endregion
+
+            #region System
+            {
+                (ByteWriter data, Type type) => data.WriteString(type.FullName),
+                (ByteReader data) => AccessTools.TypeByName(data.ReadStringNullable())
+            },
+            #endregion
+
+			#region Ranges
+            {
+                (ByteWriter data, FloatRange range) => {
+                    data.WriteFloat(range.min);
+                    data.WriteFloat(range.max);
+                },
+                (ByteReader data) => new FloatRange(data.ReadFloat(), data.ReadFloat())
+            },
+            {
+                (ByteWriter data, IntRange range) => {
+                    data.WriteInt32(range.min);
+                    data.WriteInt32(range.max);
+                },
+                (ByteReader data) => new IntRange(data.ReadInt32(), data.ReadInt32())
+            },
+            {
+                (ByteWriter data, QualityRange range) => {
+                    WriteSync(data, range.min);
+                    WriteSync(data, range.max);
+                },
+                (ByteReader data) => new QualityRange(ReadSync<QualityCategory>(data), ReadSync<QualityCategory>(data))
+            },
+            #endregion
+
+            #region Names
+            {
+                (ByteWriter data, NameSingle name) => {
+                    data.WriteString(name.nameInt);
+                    data.WriteBool(name.numerical);
+                },
+                (ByteReader data) => new NameSingle(data.ReadStringNullable(), data.ReadBool())
+            },
+            {
+                (ByteWriter data, NameTriple name) => {
+                    data.WriteString(name.firstInt);
+                    data.WriteString(name.nickInt);
+                    data.WriteString(name.lastInt);
+                },
+                (ByteReader data) => new NameTriple(data.ReadStringNullable(), data.ReadStringNullable(), data.ReadStringNullable())
+            },
+            #endregion
+
+            #region RW Misc
+            {
+                (ByteWriter data, TaggedString str) => {
+                    data.WriteString(str.rawText);
+                },
+                (ByteReader data) => new TaggedString(data.ReadStringNullable())
+            },
+            {
+                (SyncWorker worker, ref ColorInt color) =>
+                {
+                    worker.Bind(ref color.r);
+                    worker.Bind(ref color.g);
+                    worker.Bind(ref color.b);
+                    worker.Bind(ref color.a);
+                }
+            },
+            {
+                (ByteWriter data, FloatMenuContext context) =>
+                {
+                    data.MpContext().map = context.map;
+
+                    WriteSync(data, context.allSelectedPawns);
+                    WriteSync(data, context.clickPosition);
+                    WriteSync(data, context.cachedClickedCell);
+                    WriteSync(data, context.cachedClickedThings);
+                    WriteSync(data, context.cachedClickedRoom);
+                    WriteSync(data, context.cachedClickedZone);
+                },
+                (ByteReader reader) =>
+                {
+                    var context = new FloatMenuContext(ReadSync<List<Pawn>>(reader), ReadSync<Vector3>(reader), reader.MpContext().map)
+                    {
+                        cachedClickedCell = ReadSync<IntVec3>(reader),
+                        cachedClickedThings = ReadSync<List<Thing>>(reader),
+                        cachedClickedRoom = ReadSync<Room>(reader),
+                        cachedClickedZone = ReadSync<Zone>(reader)
+                    };
+
+                    context.cachedClickedPawns = context.cachedClickedThings.OfType<Pawn>().ToList();
+
+                    return context;
+                }
+            },
+            {
+                (ByteWriter data, AcceptanceReport report) =>
+                {
+                    data.WriteBool(report.acceptedInt);
+                    data.WriteString(report.reasonTextInt);
+                },
+                (ByteReader data) => new AcceptanceReport
+                {
+                    acceptedInt = data.ReadBool(),
+                    reasonTextInt = data.ReadStringNullable()
+                }
+            },
+            #endregion
+
+            #region Unity
+            {
+                (SyncWorker worker, ref Color color) => {
+                    worker.Bind(ref color.r);
+                    worker.Bind(ref color.g);
+                    worker.Bind(ref color.b);
+                    worker.Bind(ref color.a);
+                }
+            },
+            {
+                (SyncWorker worker, ref Rect rect) => {
+                    if (worker.isWriting)
+                    {
+                        worker.Write(rect.x);
+                        worker.Write(rect.y);
+                        worker.Write(rect.width);
+                        worker.Write(rect.height);
+                    }
+                    else
+                    {
+                        rect.x = worker.Read<float>();
+                        rect.y = worker.Read<float>();
+                        rect.width = worker.Read<float>();
+                        rect.height = worker.Read<float>();
+                    }
+                }
+            },
+            #endregion
+
+            #region Structs
+            {
+                (ByteWriter data, Rot4 rot) => data.WriteByte(rot.AsByte),
+                (ByteReader data) => new Rot4(data.ReadByte())
+            },
+            {
+                (ByteWriter data, IntVec3 vec) => {
+                    if (vec.y < 0) {
+                        data.WriteShort(-1);
+                    }
+                    else {
+                        data.WriteShort((short)vec.y);
+                        data.WriteShort((short)vec.x);
+                        data.WriteShort((short)vec.z);
+                    }
+                },
+                (ByteReader data) => {
+                    short y = data.ReadShort();
+                    if (y < 0)
+                        return IntVec3.Invalid;
+
+                    short x = data.ReadShort();
+                    short z = data.ReadShort();
+
+                    return new IntVec3(x, y, z);
+                }
+            },
+            {
+                (SyncWorker sync, ref Vector2 vec)  => {
+                    sync.Bind(ref vec.x);
+                    sync.Bind(ref vec.y);
+                }
+            },
+            {
+                (SyncWorker sync, ref Vector3 vec)  => {
+                    sync.Bind(ref vec.x);
+                    sync.Bind(ref vec.y);
+                    sync.Bind(ref vec.z);
+                }
+            },
+            {
+                (ByteWriter data, CellIndices cellIndices) =>
+                {
+                    data.WriteInt32(cellIndices.sizeX);
+                    data.WriteInt32(cellIndices.sizeZ);
+                },
+                (ByteReader data) => new CellIndices(data.ReadInt32(), data.ReadInt32())
+            }
+            #endregion
+        };
+    }
+}

@@ -1,0 +1,40 @@
+﻿using System;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using Verse;
+using Verse.Profile;
+
+namespace Multiplayer.Client;
+
+public static class Rejoiner
+{
+    public static void ReturnToEntry(Action onFinished)
+    {
+        LongEventHandler.ClearQueuedEvents();
+        LongEventHandler.QueueLongEvent(() =>
+        {
+            MemoryUtility.ClearAllMapsAndWorld();
+            Current.Game = null;
+
+            LongEventHandler.ExecuteWhenFinished(() =>
+            {
+                MpUI.ClearWindowStack();
+                onFinished?.Invoke();
+            });
+        }, "Entry", "LoadingLongEvent", true, null, false);
+    }
+
+    public static void DoRejoin()
+    {
+        Multiplayer.Client.Send(Packets.Client_RequestRejoin);
+
+        Multiplayer.Client.ChangeState(ConnectionStateEnum.ClientLoading);
+        Multiplayer.Client.Lenient = true;
+
+        Multiplayer.session.desynced = false;
+
+        Log.Message("Multiplayer: rejoining");
+
+        ReturnToEntry(() => Find.WindowStack.Add(new RejoiningWindow()));
+    }
+}

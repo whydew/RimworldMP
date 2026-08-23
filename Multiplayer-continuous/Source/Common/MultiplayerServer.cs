@@ -1,0 +1,377 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using HarmonyLib;
+using Multiplayer.Common.ChatCommands;
+using Multiplayer.Common.Networking.Packet;
+
+namespace Multiplayer.Common
+{
+    public class MultiplayerServer
+    {
+        static MultiplayerServer()
+        {
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ServerSteam, typeof(ServerSteamState));
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ServerJoining, typeof(ServerJoiningState));
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ServerBootstrap, typeof(ServerBootstrapState));
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ServerLoading, typeof(ServerLoadingState));
+            MpConnectionState.SetImplementation(ConnectionStateEnum.ServerPlaying, typeof(ServerPlayingState));
+        }
+
+        public static MultiplayerServer? instance;
+
+        public const int DefaultPort = 30502;
+        public const int LanBroadcastPort = 5100;
+        public const string LanBroadcastName = "mp-server";
+        public const int MaxUsernameLength = 15;
+        public const int MinUsernameLength = 3;
+        public const char EndpointSeparator = '&';
+        public const int NetTicksPerSecond = 30; // Not an exact amount. The net loop isn't particularly precise.
+
+        public static readonly Regex UsernamePattern = new(@"^[a-zA-Z0-9_]+$");
+
+        public WorldData worldData;
+        public FreezeManager freezeManager;
+        public CommandHandler commands;
+        public ChatCommandManager chatCmdManager;
+        public PlayerManager playerManager;
+        public List<INetManager> netManagers = [];
+        public IEnumerable<ServerPlayer> JoinedPlayers => playerManager.JoinedPlayers;
+        public IEnumerable<ServerPlayer> PlayingPlayers => playerManager.PlayingPlayers;
+        public IEnumerable<ServerPlayer> PlayingIngamePlayers => playerManager.PlayingPlayers.Where(p => p.status == PlayerStatus.Playing);
+
+        public string? hostUsername;
+        public int gameTimer;
+        public int startingTimer;
+        public int workTicks;
+        public ActionQueue queue = new();
+        public ServerSettings settings;
+
+        public ServerInitData? InitData => initDataSource.Task.ResultNowOrNull();
+        private TaskCompletionSource<ServerInitData?> initDataSource = new();
+        public InitDataState InitDataState =>
+            InitData != null ? InitDataState.Complete :
+            // started init data must've completed with null, meaning the client disconnected while waiting for the data,
+            // so we are waiting again
+            initDataSource.Task.IsCompleted ? InitDataState.Waiting :
+            InitDataState.Requested;
+
+        public volatile bool running;
+
+        public bool ArbiterPlaying => PlayingPlayers.Any(p => p.IsArbiter && p.status == PlayerStatus.Playing);
+        public ServerPlayer HostPlayer => PlayingPlayers.First(p => p.IsHost);
+
+        public bool FullyStarted => running && worldData.savedGame != null;
+
+        public const float StandardTimePerTick = 1000.0f / 60.0f;
+
+        public float serverTimePerTick = StandardTimePerTick;
+        public int sentCmdsSnapshot;
+
+        // --- Auto-degrade -------------------------------------------------------------------------
+        // When a player can't keep up at high speed (e.g. the Hyperspeed tier), automatically drop
+        // the game speed by one notch. The decision is made here (host-authoritative, based on real
+        // performance) but the change is issued through the normal synced command stream, so every
+        // client applies it at the same scheduled tick and the game stays deterministic.
+        public bool autoDegradeEnabled = true;
+        public byte lastGlobalTimeSpeed = 1;                 // last global speed seen (tracked in CommandHandler.Send)
+        public const int AutoDegradeBehindThreshold = 60;    // ExtrapolatedTicksBehind that counts as "not keeping up"
+        public const double AutoDegradeSustainMs = 1500;     // must stay behind this long before we drop
+        public const double AutoDegradeCooldownMs = 5000;    // wait this long after a drop before dropping again
+        public const byte AutoDegradeFloorSpeed = 1;         // never auto-drop below Normal (1x)
+        private double autoDegradeBehindMs;
+        private double autoDegradeCooldownRemainingMs;
+
+        public int NetTimer { get; private set; }
+
+        public bool IsStandaloneServer { get; set; }
+        public StandalonePersistence? persistence;
+
+        public MultiplayerServer(ServerSettings settings)
+        {
+            this.settings = settings;
+
+            worldData = new WorldData(this);
+            freezeManager = new FreezeManager(this);
+            commands = new CommandHandler(this);
+            chatCmdManager = new ChatCommandManager(this);
+            playerManager = new PlayerManager(this);
+
+            ChatCommandRegistry.Register(chatCmdManager, this);
+
+            initDataSource.SetResult(null);
+        }
+
+        public void Run()
+        {
+            ServerLog.Detail("Server started");
+
+            Stopwatch time = Stopwatch.StartNew();
+            Stopwatch tickTime = Stopwatch.StartNew();
+            double realTime = 0;
+
+            List<ServerPlayer> playersBehind = [];
+            while (running)
+            {
+                try
+                {
+                    double elapsed = time.ElapsedMillisDouble();
+                    time.Restart();
+                    realTime += elapsed;
+
+                    tickTime.Restart();
+
+                    freezeManager.Tick();
+                    queue.RunQueue(ServerLog.Error);
+                    netManagers.ForEach(manager => manager.Tick());
+                    TickNet();
+
+                    int ticked = 0;
+                    while (realTime > 0 && ticked < 2)
+                    {
+                        playersBehind.Clear();
+                        playersBehind.AddRange(PlayingIngamePlayers.Where(p => p.ExtrapolatedTicksBehind > 90));
+                        if (!freezeManager.Frozen &&
+                            PlayingPlayers.Any(p => p.ExtrapolatedTicksBehind < 40) &&
+                            !playersBehind.Any())
+                        {
+                            gameTimer++;
+                            sentCmdsSnapshot = commands.SentCmds;
+                        }
+                        else if (playersBehind.Any())
+                        {
+                            var text = playersBehind.Join(p => $"{p.Username}");
+                            ServerLog.Log($"Simulation paused because some players are too far behind: {text}");
+                        }
+
+                        // Run up to three times slower depending on max ticksBehind
+                        var slowdown = Math.Min(
+                            PlayingIngamePlayers.MaxOrZero(p => p.ticksBehind) / 60f,
+                            2f
+                        );
+                        realTime -= serverTimePerTick * (1f + slowdown);
+
+                        ticked++;
+                    }
+
+                    if (realTime > 0)
+                        realTime = 0f;
+
+                    AutoDegradeSpeedIfBehind(elapsed);
+
+                    if (MpVersion.IsDebug && tickTime.ElapsedMillisDouble() > 15f)
+                        ServerLog.Log($"Server tick took {tickTime.ElapsedMillisDouble()}ms");
+
+                    // On Windows, the clock ticks 64 times a second and sleep durations too close to a multiple of 15.625ms
+                    // tend to be rounded up, so we sleep for a bit less
+                    int sleepFor = (int)Math.Floor((1000d / NetTicksPerSecond - tickTime.ElapsedMillisDouble()) * 0.9f);
+                    if (sleepFor > 0)
+                        Thread.Sleep(sleepFor);
+                }
+                catch (Exception e)
+                {
+                    ServerLog.Log($"Exception ticking the server: {e}");
+                }
+            }
+
+            try
+            {
+                TryStop();
+            }
+            catch (Exception e)
+            {
+                ServerLog.Log($"Exception stopping the server: {e}");
+            }
+        }
+
+        // Runs once per server loop iteration. If a player has been unable to keep up for a sustained
+        // period, drop the global game speed by one notch (down to Normal). The speed change goes out
+        // as a normal GlobalTimeSpeed command, so all clients apply it deterministically at the same tick.
+        private void AutoDegradeSpeedIfBehind(double elapsedMs)
+        {
+            if (autoDegradeCooldownRemainingMs > 0)
+                autoDegradeCooldownRemainingMs -= elapsedMs;
+
+            if (!autoDegradeEnabled)
+                return;
+
+            // "Lowest wins" is a vote-based mode with no single global speed to lower; leave it to players.
+            if (settings.timeControl == TimeControl.LowestWins)
+                return;
+
+            bool anyBehind = false;
+            foreach (var p in PlayingIngamePlayers)
+                if (p.ExtrapolatedTicksBehind > AutoDegradeBehindThreshold) { anyBehind = true; break; }
+
+            if (!anyBehind)
+            {
+                autoDegradeBehindMs = 0;
+                return;
+            }
+
+            autoDegradeBehindMs += elapsedMs;
+
+            if (autoDegradeCooldownRemainingMs > 0) return;
+            if (autoDegradeBehindMs < AutoDegradeSustainMs) return;
+
+            // Already at (or below) the floor — nothing left to drop.
+            if (lastGlobalTimeSpeed <= AutoDegradeFloorSpeed)
+            {
+                autoDegradeBehindMs = 0;
+                return;
+            }
+
+            byte newSpeed = (byte)(lastGlobalTimeSpeed - 1);
+            commands.Send(
+                CommandType.GlobalTimeSpeed,
+                ScheduledCommand.NoFaction,
+                ScheduledCommand.Global,
+                ByteWriter.GetBytes(newSpeed));
+
+            lastGlobalTimeSpeed = newSpeed;
+            autoDegradeBehindMs = 0;
+            autoDegradeCooldownRemainingMs = AutoDegradeCooldownMs;
+
+            var laggers = string.Join(", ", PlayingIngamePlayers
+                .Where(p => p.ExtrapolatedTicksBehind > AutoDegradeBehindThreshold)
+                .Select(p => p.Username));
+            ServerLog.Log($"Auto-lowered game speed to {(TimeVote)newSpeed} because a player can't keep up: {laggers}");
+        }
+
+        private void TickNet()
+        {
+            NetTimer++;
+
+            if (NetTimer % NetTicksPerSecond == 0)
+                playerManager.SendLatencies();
+
+
+            if (NetTimer % (NetTicksPerSecond / 5) == 0)
+            {
+                foreach (var player in JoinedPlayers) {
+                    player.SendKeepAlivePacket();
+                }
+            }
+
+            // Send to simulating players as well to update the simulation window for them and actually update further
+            // during the same simulation.
+            SendToPlaying(new ServerTimeControlPacket(gameTimer, sentCmdsSnapshot, serverTimePerTick), false);
+
+            serverTimePerTick = PlayingIngamePlayers.MaxOrZero(p => p.frameTime);
+
+            if (serverTimePerTick < StandardTimePerTick)
+                serverTimePerTick = StandardTimePerTick;
+
+            if (serverTimePerTick > StandardTimePerTick * 4f)
+                serverTimePerTick = StandardTimePerTick * 4f;
+        }
+
+        public void TryStop()
+        {
+            ServerLog.Detail("Server shutting down...");
+
+            playerManager.OnServerStop();
+            netManagers.ForEach(manager => manager.Stop());
+
+            instance = null;
+        }
+
+        public void Enqueue(Action action)
+        {
+            queue.Enqueue(action);
+        }
+
+        public void SendToPlaying<T>(T packet, bool reliable = true, ServerPlayer? excluding = null) where T : IPacket
+        {
+            var serialized = packet.Serialize();
+            foreach (ServerPlayer player in PlayingPlayers)
+                if (player != excluding)
+                    player.conn.Send(serialized, reliable);
+        }
+
+        public void SendToIngame<T>(T packet, bool reliable = true, ServerPlayer? excluding = null) where T : IPacket
+        {
+            var serialized = packet.Serialize();
+            foreach (ServerPlayer player in PlayingIngamePlayers)
+                if (player != excluding)
+                    player.conn.Send(serialized, reliable);
+        }
+
+        public bool CanUseStandaloneMapStreaming(int mapId) => false;
+
+        public void SendMapResponse(ServerPlayer player, int mapId)
+        {
+            if (!CanUseStandaloneMapStreaming(mapId))
+                return;
+
+            ByteWriter writer = new ByteWriter();
+            writer.WriteInt32(mapId);
+
+            var mapCmds = worldData.mapCmds.GetValueSafe(mapId) ?? [];
+            writer.WriteInt32(mapCmds.Count);
+            foreach (var cmd in mapCmds)
+                writer.WritePrefixedBytes(cmd);
+
+            writer.WritePrefixedBytes(worldData.mapData[mapId]);
+            player.conn.SendFragmented(Packets.Server_MapResponse, writer.ToArray());
+        }
+
+        public ServerPlayer? GetPlayer(string username)
+        {
+            return playerManager.GetPlayer(username);
+        }
+
+        public ServerPlayer? GetPlayer(int id)
+        {
+            return playerManager.GetPlayer(id);
+        }
+
+        public void SendChat(string msg)
+        {
+            ServerLog.Detail($"[Chat] {msg}");
+            SendToPlaying(ServerChatPacket.Create(msg));
+        }
+
+        public void SendNotification(string key, params string[] args) =>
+            SendToPlaying(new ServerNotificationPacket(key) { args = args });
+
+        public void RegisterChatCommand(string commandName, IChatCommand command) =>
+            chatCmdManager.AddCommand(commandName, command);
+
+        public void RegisterChatCommand(string[] commandNames, IChatCommand command, string description = "", string usage = "", bool requiresHost = false) =>
+            chatCmdManager.AddCommands(commandNames, command, description, usage, requiresHost);
+
+        [Obsolete("Use RegisterChatCommand instead.")]
+        public void RegisterChatCmd(string cmdName, ChatCmdHandler handler) =>
+            RegisterChatCommand(cmdName, handler);
+
+        public void HandleChatCommand(IChatSource source, string command) => chatCmdManager.Handle(source, command);
+
+        [Obsolete("Use HandleChatCommand instead.")]
+        public void HandleChatCmd(IChatSource source, string cmd) => HandleChatCommand(source, cmd);
+
+        public Task<ServerInitData?> InitDataTask() => initDataSource.Task;
+
+        public bool BootstrapMode { get; set; }
+
+        /// Can only start one init data at a time. A StartInitData is considered complete once
+        /// TaskCompletionResult.SetResult is called. Until that time no new calls to StartInitData will succeed.
+        public TaskCompletionSource<ServerInitData?> StartInitData()
+        {
+            if (InitDataState != InitDataState.Waiting)
+                throw new InvalidOperationException($"Can't start init data in state {InitDataState}");
+            return initDataSource = new TaskCompletionSource<ServerInitData?>();
+        }
+    }
+
+    public enum InitDataState
+    {
+        Waiting,
+        Requested,
+        Complete
+    }
+}

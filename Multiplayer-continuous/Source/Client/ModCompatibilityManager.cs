@@ -1,0 +1,214 @@
+#nullable enable
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Threading.Tasks;
+using LudeonTK;
+using Multiplayer.Common;
+using RestSharp;
+using Steamworks;
+using UnityEngine;
+using Verse;
+
+namespace Multiplayer.Client
+{
+    public static class ModCompatibilityManager
+    {
+        static ModCompatibilityManager()
+        {
+            Task.Run(UpdateModCompatibilityDb);
+        }
+
+        public static bool? fetchSuccess;
+
+        private static Dictionary<long, ModCompatibility> workshopLookup = new();
+        private static Dictionary<string, ModCompatibility> nameLookup = new();
+
+        private const string CacheFileName = "compat.json";
+        private static readonly string CacheFilePath = Path.Combine(Multiplayer.CacheDir, CacheFileName);
+        private class CacheRoot
+        {
+            public string? CachedDate { get; set; }
+            public string? CachedETag { get; set; }
+            public List<ModCompatibility>? Mods { get; set; }
+        }
+
+        private static async Task<CacheRoot?> TryLoadCachedDb()
+        {
+            if (!File.Exists(CacheFilePath)) return null;
+            var data = await File.ReadAllTextAsync(CacheFilePath);
+            try
+            {
+                return SimpleJson.DeserializeObject<CacheRoot>(data);
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"MP: Failed to deserialize {CacheFileName}:\n{e}");
+                return null;
+            }
+        }
+        private static async Task TrySaveCachedDb(CacheRoot cache)
+        {
+            try
+            {
+                var data = SimpleJson.SerializeObject(cache);
+                await File.WriteAllTextAsync(CacheFilePath, data);
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"MP: Failed to save cache {CacheFileName}:\n{e}");
+            }
+        }
+
+        [DebugAction(category = "Multiplayer", allowedGameStates = AllowedGameStates.Entry)]
+        private static void ClearCompatCacheFile() => File.Delete(CacheFilePath);
+        [DebugAction(category = "Multiplayer", allowedGameStates = AllowedGameStates.Entry)]
+        private static void ClearLoadedCompatData() {
+            workshopLookup.Clear();
+            nameLookup.Clear();
+            fetchSuccess = null;
+        }
+
+        [DebugAction(category = "Multiplayer", allowedGameStates = AllowedGameStates.Entry)]
+        private static void UpdateModCompatCache() => Task.Run(UpdateModCompatibilityDb);
+
+        // Requires clearing loaded compat data to work (because of the static constructor which runs before it's
+        // possible to switch this value).
+        [TweakValue(category: "Multiplayer")] private static bool simulateOffline = false;
+
+        private static async Task UpdateModCompatibilityDb()
+        {
+            var client = new RestClient("https://bot.rimworldmultiplayer.com/");
+            client.AddDefaultHeader("X-Multiplayer-Version", MpVersion.Version);
+            string? requestId = null;
+            try
+            {
+                var cached = await TryLoadCachedDb();
+                if (cached?.Mods != null)
+                {
+                    ServerLog.Log("MP: displaying cached mod compat while updating...");
+                    SetupFrom(cached.Mods);
+                }
+
+                if (simulateOffline) throw new Exception("Simulating offline state");
+
+                var req = new RestRequest("mod-compatibility?version=1.1&format=metadata")
+                {
+                    RequestFormat = DataFormat.Json
+                };
+                if (cached?.CachedDate is { } date)
+                {
+                    req.AddHeader("If-Modified-Since", date);
+                }
+                if (cached?.CachedETag is { } etag)
+                {
+                    req.AddHeader("If-None-Match", etag);
+                }
+
+                var stopwatch = Stopwatch.StartNew();
+                var resp = client.Get(req);
+                requestId = GetHeaderValue(resp, "X-Request-Id");
+
+                if (resp.ErrorException != null) throw resp.ErrorException;
+                List<ModCompatibility>? modCompatibilities;
+                if (resp.StatusCode == HttpStatusCode.NotModified)
+                {
+                    modCompatibilities = cached!.Mods!;
+                    Log.Message($"MP: successfully validated {modCompatibilities.Count} mods compatibility info " +
+                                $"in {stopwatch.Elapsed}");
+                }
+                else
+                {
+                    if (resp.StatusCode != HttpStatusCode.OK)
+                    {
+                        Log.Warning(
+                            $"MP: received unexpected status code {resp.StatusCode} when fetching mod compatibility. Headers: {resp.Headers.Join(", ")}");
+                    }
+
+                    modCompatibilities = SimpleJson.DeserializeObject<List<ModCompatibility>>(resp.Content);
+
+                    var cacheRoot = new CacheRoot
+                    {
+                        CachedDate = GetHeaderValue(resp, "Last-Modified"),
+                        CachedETag = GetHeaderValue(resp, "ETag"),
+                        Mods = modCompatibilities
+                    };
+                    _ = Task.Run(async () => await TrySaveCachedDb(cacheRoot));
+                    Log.Message($"MP: successfully fetched {modCompatibilities.Count} mods compatibility info " +
+                                $"in {stopwatch.Elapsed}");
+                }
+
+                SetupFrom(modCompatibilities);
+                fetchSuccess = true;
+            }
+            catch (Exception e)
+            {
+                Log.Warning($"MP: updating mod compatibility list failed (requestId: {requestId ?? "<none>"}):\n{e}");
+                fetchSuccess = false;
+            }
+        }
+
+        private static string? GetHeaderValue(IRestResponse resp, string headerName) => resp.Headers
+            .FirstOrDefault(header => header.Name.EqualsIgnoreCase(headerName))?.Value?.ToString();
+
+        private static void SetupFrom(List<ModCompatibility> mods)
+        {
+            workshopLookup = mods
+                .Where(mod => mod.workshopId != 0)
+                .GroupBy(mod => mod.workshopId)
+                .ToDictionary(grouping => grouping.Key, grouping => grouping.First());
+
+            nameLookup = mods
+                .GroupBy(mod => mod.name.ToLower())
+                .ToDictionary(grouping => grouping.Key, grouping => grouping.First());
+        }
+
+        public static ModCompatibility? LookupByMod(ModMetaData meta) =>
+            LookupByWorkshopId(meta.GetPublishedFileId()) ?? LookupByName(meta.Name);
+
+        public static ModCompatibility? LookupByWorkshopId(PublishedFileId_t workshopId) =>
+            LookupByWorkshopId(workshopId.m_PublishedFileId);
+
+        public static ModCompatibility? LookupByWorkshopId(ulong workshopId)
+        {
+            workshopLookup.TryGetValue((long)workshopId, out var compat);
+            return compat;
+        }
+
+        public static ModCompatibility? LookupByName(string name)
+        {
+            nameLookup.TryGetValue(name.ToLower(), out var compat);
+            return compat;
+        }
+    }
+
+    public class ModCompatibility
+    {
+        // These are properties because RestSharp requires that for deserialization
+        public int status { get; set; }
+        public string name { get; set; }
+        public long workshopId { get; set; }
+        public string notes { get; set; } = "";
+
+        public static Color ScoreColor(int score) => score switch
+        {
+            1 => ColorLibrary.Red,
+            2 => ColorLibrary.Orange,
+            3 => ColorLibrary.Yellow,
+            4 => ColorLibrary.Green,
+            _ => ColorLibrary.Grey
+        };
+
+        public static string ScoreDescription(int score) => score switch
+        {
+            1 => "MpModCompatScore1",
+            2 => "MpModCompatScore2",
+            3 => "MpModCompatScore3",
+            4 => "MpModCompatScore4",
+            _ => "MpModCompatScoreUnk"
+        };
+    }
+}

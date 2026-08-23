@@ -1,0 +1,210 @@
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+using HarmonyLib;
+using Multiplayer.Client.Saving;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using RimWorld;
+using UnityEngine;
+using Verse;
+
+namespace Multiplayer.Client
+{
+    [HarmonyPatch(typeof(MainMenuDrawer), nameof(MainMenuDrawer.DoMainMenuControls))]
+    public static class MainMenuMarker
+    {
+        public static bool drawing;
+
+        static void Prefix() => drawing = true;
+        static void Postfix() => drawing = false;
+    }
+
+    [HarmonyPatch(typeof(MainMenuDrawer), nameof(MainMenuDrawer.DoMainMenuControls))]
+    public static class MainMenu_AddHeight
+    {
+        static void Prefix(ref Rect rect) => rect.height += 45f;
+    }
+
+    [HarmonyPatch(typeof(OptionListingUtility), nameof(OptionListingUtility.DrawOptionListing))]
+    public static class MainMenuPatch
+    {
+        static void Prefix(Rect rect, List<ListableOption> optList)
+        {
+            if (!MainMenuMarker.drawing) return;
+
+            if (Current.ProgramState == ProgramState.Entry)
+            {
+                int newColony = optList.FindIndex(opt => opt.label == "NewColony".Translate());
+                if (newColony != -1)
+                {
+                    var version = $"Multiplayer v{MpVersion.Version}";
+                    var tooltip = $"{version}\n" + "MpMultiplayerButtonTooltip".Translate();
+                    optList.Insert(newColony + 1, new ListableOptionWithMarker("MpMultiplayerButton".Translate(),
+                        tooltip,
+                        () =>
+                        {
+                            if (Event.current.button == 1 && Event.current.shift)
+                            {
+                                Find.WindowStack.Add(new FloatMenu([
+                                    new FloatMenuOption("MpGenerateDebugFile".Translate(),
+                                        () => DebugInfoFile.Generate())
+                                ]));
+                            }
+                            else if (Event.current.button == 0 && Event.current.shift)
+                                GUIUtility.systemCopyBuffer = version;
+                            else
+                            {
+                                Find.WindowStack.Add(new ServerBrowser());
+                                VersionChecker.OpenNewVersionDialogIfApplicable();
+                            }
+                        }));
+                }
+            }
+
+            if (optList.Any(opt => opt.label == "ReviewScenario".Translate()))
+            {
+                if (Multiplayer.session == null)
+                    optList.Insert(0, new ListableOption(
+                        "MpHostServer".Translate(),
+                        () => Find.WindowStack.Add(new HostWindow() { layer = WindowLayer.Super })
+                    ));
+
+                if (MpVersion.IsDebug && Multiplayer.IsReplay)
+                    optList.Insert(0, new ListableOption(
+                        "MpHostServer".Translate(),
+                        () => Find.WindowStack.Add(new HostWindow() { layer = WindowLayer.Super })
+                    ));
+
+                if (Multiplayer.Client != null)
+                {
+                    optList.RemoveAll(opt => opt.label == "Save".Translate() || opt.label == "LoadGame".Translate());
+                    if (!Multiplayer.IsReplay)
+                    {
+                        optList.Insert(
+                            0,
+                            new ListableOption(
+                                "Save".Translate(),
+                                () => Find.WindowStack.Add(new SaveGameWindow(Multiplayer.session.gameName)
+                                {
+                                    layer = WindowLayer.Super
+                                })));
+                    }
+
+                    var quitMenuLabel = "QuitToMainMenu".Translate();
+                    var saveAndQuitMenu = "SaveAndQuitToMainMenu".Translate();
+                    int? quitToMenuIndex = optList.IndexNullable(opt => opt.label == quitMenuLabel || opt.label == saveAndQuitMenu);
+
+                    if (quitToMenuIndex is { } i1)
+                    {
+                        optList[i1].label = quitMenuLabel;
+                        optList[i1].action = AskQuitToMainMenu;
+                    }
+
+                    var quitOSLabel = "QuitToOS".Translate();
+                    var saveAndQuitOSLabel = "SaveAndQuitToOS".Translate();
+                    var quitOSOptIndex = optList.IndexNullable(opt => opt.label == quitOSLabel || opt.label == saveAndQuitOSLabel);
+
+                    if (quitOSOptIndex is { } i2)
+                    {
+                        optList[i2].label = quitOSLabel;
+                        optList[i2].action = () =>
+                        {
+                            if (Multiplayer.LocalServer != null)
+                                Find.WindowStack.Add(Dialog_MessageBox.CreateConfirmation(GetServerCloseConfirmation(), Root.Shutdown, true, layer: WindowLayer.Super));
+                            else
+                                Root.Shutdown();
+                        };
+                    }
+
+                    optList.Insert(
+                        quitToMenuIndex ?? quitOSOptIndex ?? 0,
+                        new ListableOption("MpConvertToSp".Translate(), AskConvertToSingleplayer)
+                    );
+                }
+            }
+        }
+
+        public static void AskQuitToMainMenu()
+        {
+            if (Multiplayer.LocalServer == null)
+            {
+                GenScene.GoToMainMenu();
+                return;
+            }
+
+            Find.WindowStack.Add(
+                Dialog_MessageBox.CreateConfirmation(
+                    GetServerCloseConfirmation(),
+                    GenScene.GoToMainMenu,
+                    true,
+                    layer: WindowLayer.Super
+                )
+            );
+        }
+
+        static string GetServerCloseConfirmation()
+        {
+            float? seconds = Time.realtimeSinceStartup - Multiplayer.session.lastSaveAt;
+            if (seconds is null or < 10)
+                return "MpServerCloseConfirmationNoTime".Translate();
+
+            var minutes = seconds / 60;
+            return "MpServerCloseConfirmationTime".Translate(minutes > 0 ? $"{minutes:0.00}min" : $"{seconds:0.00}s");
+        }
+
+        private static void AskConvertToSingleplayer()
+        {
+            var warning = Multiplayer.LocalServer != null
+                ? "MpConvertToSpWarnHost".Translate()
+                : "MpConvertToSpWarn".Translate();
+
+            if (Multiplayer.GameComp.multifaction)
+                warning += "\n\n\nOnly your current faction will keep its data. All other factions will lose their data (e.g. research progress).";
+
+            Find.WindowStack.Add(
+                Dialog_MessageBox.CreateConfirmation(
+                    warning,
+                    ConvertToSp.DoConvert,
+                    true,
+                    layer: WindowLayer.Super
+                )
+            );
+        }
+    }
+
+    class ListableOptionWithMarker(string label, string tooltip, Action action, string uiHighlightTag = null)
+        : ListableOption(label, action, uiHighlightTag)
+    {
+        public override float DrawOption(Vector2 pos, float width)
+        {
+            var height = base.DrawOption(pos, width);
+            var rect = new Rect(pos.x, pos.y, width, height);
+
+            TooltipHandler.TipRegion(rect, tooltip);
+            if (Multiplayer.loadingErrors)
+            {
+                var markerRect = new Rect(rect.xMax - 36, rect.center.y - 12, 24, 24);
+                GUI.DrawTexture(markerRect, Widgets.CheckboxOffTex);
+                TooltipHandler.TipRegion(markerRect, MpUtil.TranslateWithDoubleNewLines("MpLoadingError", 5));
+            }
+
+            return height;
+        }
+    }
+
+    [HarmonyPatch]
+    static class Shutdown_Quit_Patch
+    {
+        static IEnumerable<MethodBase> TargetMethods()
+        {
+            yield return AccessTools.Method(typeof(GenScene), nameof(GenScene.GoToMainMenu));
+            yield return AccessTools.Method(typeof(Root), nameof(Root.Shutdown));
+        }
+
+        static void Prefix()
+        {
+            Multiplayer.StopMultiplayer();
+        }
+    }
+}

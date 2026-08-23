@@ -1,0 +1,257 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using HarmonyLib;
+using Multiplayer.Client.AsyncTime;
+using Multiplayer.Client.Comp;
+using Multiplayer.Client.Desyncs;
+using Multiplayer.Client.Patches;
+using Multiplayer.Client.Util;
+using Multiplayer.Common;
+using RimWorld;
+using UnityEngine;
+using Verse;
+#if EDIT_COMPILE_RELOAD
+using HotSwap;
+#endif
+
+namespace Multiplayer.Client
+{
+    public static class Multiplayer
+    {
+        public const string WebsiteLink = "https://rimworldmultiplayer.com";
+        // There is also a link in About.xml. Remember to update both
+        public const string DiscordLink = "https://discord.gg/S4bxXpv";
+
+        public static Harmony harmony = new("multiplayer");
+        public static MpSettings settings;
+
+        public static MultiplayerGame game;
+        public static MultiplayerSession session;
+
+        public static Common.SyncSerialization serialization;
+
+        public static MultiplayerServer LocalServer { get; set; }
+        public static Thread localServerThread;
+
+        public static ConnectionBase Client => session?.client;
+        public static PacketLogWindow WriterLog => session?.writerLog;
+        public static PacketLogWindow ReaderLog => session?.readerLog;
+        public static bool IsReplay => session?.replay ?? false;
+
+        public static string username;
+
+        public static bool reloading;
+
+        public static MultiplayerGameComp GameComp => game.gameComp;
+        public static MultiplayerWorldComp WorldComp => game.worldComp;
+        public static AsyncWorldTimeComp AsyncWorldTime => game.asyncWorldTimeComp;
+        public static ThingsById ThingsById => game.thingsById;
+
+        public static bool ShowDevInfo => Prefs.DevMode && settings.showDevInfo;
+        public static bool GhostMode => session is { ghostModeCheckbox: true };
+
+        public static Faction RealPlayerFaction => Client != null ? game.RealPlayerFaction : Faction.OfPlayer;
+
+        public static bool ExecutingCmds => TickPatch.currentExecutingCmdType != null;
+        public static bool ExecutingCmdDebugTool => TickPatch.currentExecutingCmdType == CommandType.DebugTools;
+        public static bool Ticking => AsyncWorldTimeComp.tickingWorld || AsyncTimeComp.tickingMap != null || ConstantTicker.ticking;
+        public static Map MapContext => AsyncTimeComp.tickingMap ?? AsyncTimeComp.executingCmdMap;
+
+        public static bool dontSync;
+        public static bool ShouldSync => InInterface && !dontSync;
+        public static bool InInterface =>
+            Client != null
+            && !Ticking
+            && !ExecutingCmds
+            && !reloading
+            && Current.ProgramState == ProgramState.Playing
+            && LongEventHandler.currentEvent == null;
+
+        public static string ReplaysDir => GenFilePaths.FolderUnderSaveData("MpReplays");
+        public static string DesyncsDir => GenFilePaths.FolderUnderSaveData("MpDesyncs");
+        public static string LogsDir => GenFilePaths.FolderUnderSaveData("MpLogs");
+        public static string CacheDir => GenFilePaths.FolderUnderSaveData("MpCache");
+
+        public static Stopwatch clock = Stopwatch.StartNew();
+
+        public static bool arbiterInstance;
+        public static bool loadingErrors;
+        public static Stopwatch harmonyWatch = new();
+
+        public static ModContentPack modContentPack;
+
+        public static void InitMultiplayer(ModContentPack content)
+        {
+#if EDIT_COMPILE_RELOAD
+            EcrLog.messageCallback = Log.Message;
+            EcrLog.errorCallback = Log.Error;
+            // EditCompileReload.RegisterAssemblyWatcher("Mods/Multiplayer/Source/Client/bin", "MultiplayerCommon.dll_orig");
+            EditCompileReload.RegisterAssemblyWatcher("Mods/Multiplayer/Source/Client/bin", "Multiplayer.dll_orig");
+#endif
+
+            modContentPack = content;
+            Native.EarlyInit(
+                Application.platform switch
+                {
+                    RuntimePlatform.LinuxEditor => Native.NativeOS.Linux,
+                    RuntimePlatform.LinuxPlayer => Native.NativeOS.Linux,
+                    RuntimePlatform.OSXEditor => Native.NativeOS.OSX,
+                    RuntimePlatform.OSXPlayer => Native.NativeOS.OSX,
+                    _ => Native.NativeOS.Windows
+                });
+
+            DisableOmitFramePointer();
+            JittedMethods.Init();
+
+            MultiplayerLoader.Multiplayer.settingsWindowDrawer =
+                rect => MpSettingsUI.DoSettingsWindowContents(settings, rect);
+
+            using (DeepProfilerWrapper.Section("Multiplayer CacheTypeHierarchy"))
+                TypeCache.CacheTypeHierarchy();
+
+            using (DeepProfilerWrapper.Section("Multiplayer CacheTypeByName"))
+                TypeCache.CacheTypeByName();
+
+            if (GenCommandLine.CommandLineArgPassed("profiler"))
+            {
+                SimpleProfiler.CheckAvailable();
+                Log.Message($"Profiler: {SimpleProfiler.available}");
+                SimpleProfiler.Init("prof");
+            }
+
+            if (GenCommandLine.CommandLineArgPassed("arbiter"))
+            {
+                ArbiterWindowFix.Run();
+                arbiterInstance = true;
+            }
+
+            ScribeLike.provider = new ScribeProvider();
+            settings = MultiplayerLoader.Multiplayer.instance!.GetSettings<MpSettings>();
+
+            EarlyInit.ProcessEnvironment();
+            EarlyInit.EarlyPatches(harmony);
+            MpReflection.allAssembliesHook = RwAllAssemblies;
+            EarlyInit.InitSync();
+            CheckInterfaceVersions();
+
+            LongEventHandler.ExecuteWhenFinished(() => {
+                // Double Execute ensures it'll run last.
+                LongEventHandler.ExecuteWhenFinished(EarlyInit.LatePatches);
+            });
+
+            MultiplayerData.modCtorRoundMode = RoundMode.GetCurrentRoundMode();
+            VersionChecker.Init();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void DisableOmitFramePointer()
+        {
+            Native.mini_parse_debug_option("disable_omit_fp");
+        }
+
+        private static void CheckInterfaceVersions()
+        {
+            var mpAssembly = AppDomain.CurrentDomain.GetAssemblies().First(a => a.GetName().Name == "Multiplayer");
+            var curVersion = new Version(
+                (mpAssembly.GetCustomAttributes(typeof(AssemblyFileVersionAttribute), false)[0] as AssemblyFileVersionAttribute).Version
+            );
+
+            Log.Message($"Current MultiplayerAPI version: {curVersion}");
+
+            foreach (var mod in LoadedModManager.RunningMods) {
+                if (mod.assemblies.loadedAssemblies.NullOrEmpty())
+                    continue;
+
+                if (mod == modContentPack)
+                    continue;
+
+                // Test if mod is using multiplayer api
+                if (!mod.assemblies.loadedAssemblies.Any(a => a.GetName().Name == MpVersion.ApiAssemblyName)) {
+                    continue;
+                }
+
+                // Retrieve the original dll
+                var info = MultiplayerData.GetModAssemblies(mod)
+                    .Select(f => FileVersionInfo.GetVersionInfo(f.FullName))
+                    .FirstOrDefault(v => v.ProductName == "Multiplayer");
+
+                if (info == null) {
+                    // There are certain mods that don't include the API, namely compat
+                    // Can we test them?
+                    continue;
+                }
+
+                var version = new Version(info.FileVersion);
+
+                Log.Message($"Mod {mod.Name} has MultiplayerAPI client ({version})");
+
+                if (curVersion > version)
+                    Log.Warning($"Mod {mod.Name} uses an older API version (mod: {version}, current: {curVersion})");
+                else if (curVersion < version)
+                    Log.Error($"Mod {mod.Name} uses a newer API version! (mod: {version}, current: {curVersion})\nMake sure the Multiplayer mod is up to date");
+            }
+        }
+
+        public static void StopMultiplayerAndClearAllWindows()
+        {
+            StopMultiplayer();
+            MpUI.ClearWindowStack();
+        }
+
+        public static void StopMultiplayer()
+        {
+            Log.Message($"Stopping multiplayer session from {new StackTrace().GetFrame(1).GetMethod().FullDescription()}");
+
+            OnMainThread.ClearScheduled();
+            LongEventHandler.ClearQueuedEvents();
+
+            if (session != null)
+            {
+                session.Stop();
+                session = null;
+
+                Prefs.Apply();
+            }
+
+            if (LocalServer != null)
+            {
+                LocalServer.running = false;
+                localServerThread?.Join();
+                LocalServer.TryStop();
+                LocalServer = null;
+            }
+
+            game?.OnDestroy();
+            game = null;
+
+            TickPatch.Reset();
+            VTRSync.Reset();
+
+            Find.WindowStack?.WindowOfType<ServerBrowser>()?.Cleanup(true);
+            SyncFieldUtil.ClearAllBufferedChanges();
+
+            if (arbiterInstance)
+            {
+                arbiterInstance = false;
+                Application.Quit();
+            }
+        }
+
+        private static IEnumerable<Assembly> RwAllAssemblies()
+        {
+            yield return Assembly.GetAssembly(typeof(Game));
+
+            foreach (ModContentPack mod in LoadedModManager.RunningMods)
+            foreach (Assembly assembly in mod.assemblies.loadedAssemblies)
+                yield return assembly;
+
+            if (Assembly.GetEntryAssembly() != null)
+                yield return Assembly.GetEntryAssembly();
+        }
+    }
+}
