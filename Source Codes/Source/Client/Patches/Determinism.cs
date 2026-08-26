@@ -428,6 +428,19 @@ namespace Multiplayer.Client.Patches
             return matcher.Instructions();
         }
 
+        // --- P1a note (PawnCapacitiesHandler) ---
+        // Unlike StatWorker, this cache is NOT tick-keyed: it is invalidated by a dirty flag
+        // (Notify_CapacityLevelsDirty) whenever hediffs change, and the level is pure,
+        // deterministic math over the pawn's hediffs (no RNG). The guard below already forces
+        // the simulation to recompute any value the interface computed (CachedInInterface),
+        // so during sim a capacity is always either freshly recomputed or a value the sim
+        // itself computed earlier this dirty-cycle -- identical on every client regardless of
+        // which map anyone is viewing. It is therefore already view-independent, and any stat
+        // reads it performs go through the (now sim-recomputing) StatWorker path above.
+        // We deliberately do NOT force a full recompute on every sim call here: GetLevel is an
+        // extremely hot path and doing so would be a large perf regression for zero
+        // determinism benefit. If instrumentation ever shows a capacity-level divergence,
+        // revisit this method.
         private static bool ShouldUpdateCache(PawnCapacitiesHandler.CacheStatus status)
         {
             return status == PawnCapacitiesHandler.CacheStatus.Uncached || !Multiplayer.InInterface && status == CachedInInterface;
@@ -489,8 +502,26 @@ namespace Multiplayer.Client.Patches
 
         private static bool HasValueInCache(bool hasValueInCache, StatWorker worker, Thing t)
         {
-            var simulating = !Multiplayer.InInterface;
-            return hasValueInCache && !(simulating && worker.temporaryStatCache[t].gameTick < 0);
+            // --- P1a async/map-load determinism fix ---
+            // temporaryStatCache is a single per-StatWorker dictionary keyed by
+            // Find.TickManager.TicksGame. Under async time that "current tick" is the
+            // *viewed* map's mapTicks while the interface runs (SetMapTimeForUI) but the
+            // *ticking* map's mapTicks during simulation (AsyncTimeComp.PreContext). A cache
+            // entry stamped while one player views map B could then be (in)correctly reused
+            // during map A's sim tick, and whether that happened depended on which map each
+            // player was looking at -> host and client took different cache hit/recompute
+            // branches -> one-RNG-call off-by-one -> desync (100% on new-map load, because a
+            // load forces the two players onto different current maps with cold caches).
+            //
+            // Fix: during simulation NEVER reuse the temporary stat cache. GetValue then
+            // recomputes the stat from deterministic pawn state, giving bit-identical results
+            // for a given (pawn, ticking map, mapTicks) on every client, independent of any
+            // player's view. The interface still uses the cache for its own rendering perf;
+            // interface-computed values never feed the simulation, so that stays harmless.
+            if (!Multiplayer.InInterface)
+                return false;
+
+            return hasValueInCache;
         }
 
         private static StatCacheEntry NewCacheTicksCtor(StatCacheEntry entry)
@@ -750,5 +781,20 @@ namespace Multiplayer.Client.Patches
             Multiplayer.Client != null ? length : UnityData.GetIdealBatchCount(length);
     }
 
+    // --- Problem 2 fix: keep the animal idle-call audio path out of the deterministic tick ---
+    // Verse.Pawn_CallTracker.CallTrackerTickInterval runs the animal "idle call" system
+    // (cosmetic vocalization sounds) inside Pawn.TickInterval. In this modpack its
+    // get_IdleCallVolumeFactor throws NotImplementedException, which (a) spams the log,
+    // (b) aborts the pawn's tick partway through, and (c) makes the call path consume RNG
+    // (the "should I call" check + ResetTicksToNextCall) in a fragile, exception-dependent
+    // way -- a latent one-RNG-call off-by-one source. The idle call is purely client-side
+    // audio with no gameplay effect, so during multiplayer we skip the whole method on every
+    // client identically: zero RNG consumed, no exception thrown, fully deterministic.
+    // Single-player is untouched -- the prefix only skips when a MP client exists.
+    [HarmonyPatch(typeof(Pawn_CallTracker), nameof(Pawn_CallTracker.CallTrackerTickInterval))]
+    static class DeterministicAnimalIdleCalls
+    {
+        static bool Prefix() => Multiplayer.Client == null;
+    }
 
 }

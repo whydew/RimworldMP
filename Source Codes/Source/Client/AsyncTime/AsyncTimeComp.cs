@@ -113,6 +113,20 @@ namespace Multiplayer.Client
         public void Tick()
         {
             tickingMap = map;
+
+            // --- P1b async/map-load determinism fix ---
+            // AsyncTimeComp.Tick previously left Current.Game.currentMapIndex pointing at
+            // whatever map the local player was VIEWING while it simulated this (possibly
+            // background) map. Any tick-path read of Find.CurrentMap therefore returned a
+            // different map on host vs client whenever the two players were looking at
+            // different maps -> view-dependent RNG branches -> one-call off-by-one -> desync
+            // (100% on new-map load, which forces the two players onto different current maps).
+            // Make the map being simulated the "current" map for the duration of its tick, on
+            // every client, then restore. This mirrors what ExecuteCmd already does. Rendering
+            // runs in Update/OnGUI, not during the tick, so this has no visible effect.
+            sbyte prevCurrentMapIndex = Current.Game.currentMapIndex;
+            Current.Game.currentMapIndex = (sbyte)map.Index;
+
             PreContext();
 
             //SimpleProfiler.Start();
@@ -151,7 +165,9 @@ namespace Multiplayer.Client
             finally
             {
                 PostContext();
+                Current.Game.currentMapIndex = prevCurrentMapIndex; // P1b: restore viewed map
                 Multiplayer.game.sync.TryAddMapRandomState(map.uniqueID, randState);
+                MapLoadDiagnostic.OnTick(this); // P3 diagnostic (temporary)
                 eventCount++;
                 tickingMap = null;
 

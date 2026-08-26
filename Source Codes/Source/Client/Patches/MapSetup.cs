@@ -29,6 +29,8 @@ public static class MapSetup
         var async = CreateAsyncTimeCompForMap(map, usingMapTimeFromSingleplayer);
         Multiplayer.game.asyncTimeComps.Add(async);
 
+        MapLoadDiagnostic.OnMapSetup(map, async); // P3 diagnostic (temporary)
+
         // Store all current managers for Faction.OfPlayer
         InitFactionDataFromMap(map, Faction.OfPlayer);
 
@@ -63,7 +65,21 @@ public static class MapSetup
         }
         else
         {
-            startingMapTicks = Find.Maps.Where(m => m != map).Select(m => m.AsyncTime()?.mapTicks).Max() ?? Find.TickManager.TicksGame;
+            // --- P2 note: new-map clock seeding ---
+            // A new map's starting mapTicks is "the furthest-ahead existing map", so it doesn't
+            // lag behind. Every input here is synced simulation state (the set of maps, each
+            // map's AsyncTime().mapTicks, and TicksGame), so as long as the clients are in sync
+            // at generation time — and generation runs inside a timeline freeze, see
+            // LongEvents.cs — this Max() is identical on every client. We intentionally keep the
+            // value but materialize it defensively (ignore any map whose AsyncTimeComp isn't set
+            // yet, deterministically) and let the [MPMAPLOAD] diagnostic confirm it matches
+            // across clients. If the diagnostic ever shows startMapTicks differing at setup,
+            // this line is the culprit and should be reseeded from a single synced scalar.
+            startingMapTicks = Find.Maps
+                .Where(m => m != map && m.AsyncTime() != null)
+                .Select(m => m.AsyncTime().mapTicks)
+                .DefaultIfEmpty(Find.TickManager.TicksGame)
+                .Max();
             gameStartAbsTick = Find.TickManager.gameStartAbsTick;
             startingTimeSpeed = TimeSpeed.Paused;
         }

@@ -167,7 +167,29 @@ namespace Multiplayer.Client.AsyncTime
             if (Multiplayer.Client == null) return;
 
             // The newly generated map
-            Find.Maps.LastOrDefault()?.AsyncTime().slower.SignalForceNormalSpeedShort();
+            var newMapAsync = Find.Maps.LastOrDefault()?.AsyncTime();
+            if (newMapAsync == null) return;
+
+            // --- P2 async/map-load determinism fix ---
+            // Vanilla SignalForceNormalSpeedShort() sets forceNormalSpeedUntil =
+            // Find.TickManager.TicksGame + <duration>. But here TicksGame is NOT the new map's
+            // own clock -- it's whatever time context is active during generation, which can
+            // vary between clients (it can reflect a viewed/current map's ticks).
+            // AsyncTimeComp.TickRateMultiplier then gates on "mapTicks < forceNormalSpeedUntil",
+            // so a client-varying TicksGame => client-varying force-normal-speed window => the
+            // new map exits forced speed at different times on host vs client => different tick
+            // counts per timer step => desync. Anchor the window to the new map's OWN (already
+            // deterministic) mapTicks while signalling, then restore TicksGame.
+            int prevTicksGame = Find.TickManager.ticksGameInt;
+            Find.TickManager.ticksGameInt = newMapAsync.mapTicks;
+            try
+            {
+                newMapAsync.slower.SignalForceNormalSpeedShort();
+            }
+            finally
+            {
+                Find.TickManager.ticksGameInt = prevTicksGame;
+            }
         }
     }
 
