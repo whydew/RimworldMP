@@ -70,12 +70,6 @@ public static class TimeControlPatch
     // Based on TimeControls.DoTimeControlsGUI
     private static void DoTimeControlsGUI(Rect timerRect)
     {
-        // Both branches below index TexButton.SpeedButtonTextures - vanilla's does it for speeds 0..4,
-        // ours for 0..5 - so the array has to be long enough and null-free before either runs. Doing it
-        // here, on a draw frame, is what replaced doing it in a static constructor: see HyperspeedTextures
-        // for why that ordering mattered enough to crash the game.
-        HyperspeedTextures.EnsureRegistered();
-
         if (Multiplayer.Client == null)
         {
             TimeControls.DoTimeControlsGUI(timerRect);
@@ -101,7 +95,7 @@ public static class TimeControlPatch
 
         foreach (var speed in GameSpeeds)
         {
-            if (Widgets.ButtonImage(rect, TexButton.SpeedButtonTextures[(uint)speed]))
+            if (Widgets.ButtonImage(rect, HyperspeedTextures.Textures[(uint)speed]))
             {
                 // todo Move the host check to the server?
                 if (ShouldReset && Multiplayer.LocalServer != null)
@@ -474,23 +468,18 @@ static class MpTimeControls
 {
     public static void TimeIndicateBlockingPause(Rect button, Color bgColor)
     {
-        HyperspeedTextures.EnsureRegistered();
         Widgets.DrawRectFast(button, bgColor);
         Widgets.ButtonImage(button, TexButton.SpeedButtonTextures[0], doMouseoverSound: false);
     }
 
     public static void TimeControlButton(Rect button, Color bgColor, ITickable tickable)
     {
-        // Reached from the colonist bar and the world-map button, neither of which goes through
-        // DoTimeControlsGUI, and this one can index as high as Hyperspeed.
-        HyperspeedTextures.EnsureRegistered();
-
         int speed = (int)tickable.DesiredTimeSpeed;
         if (tickable.ActualRateMultiplier(TimeSpeed.Normal) == 0f)
             speed = 0;
 
         Widgets.DrawRectFast(button, bgColor);
-        if (Widgets.ButtonImage(button, TexButton.SpeedButtonTextures[speed]))
+        if (Widgets.ButtonImage(button, HyperspeedTextures.Textures[speed]))
         {
             int dir = Event.current.button == 0 ? 1 : -1;
             // Cycle through all speeds including Ultrafast and the new Hyperspeed tier (modulus = highest + 1).
