@@ -46,8 +46,16 @@ namespace Multiplayer.Client
             return null;
         }
 
-        public static MultiplayerMapComp MpComp(this Map map) =>
-            Multiplayer.game?.mapComps?.FirstOrDefault(t => t.map == map);
+        // Hot path (every micro-tick via AsyncTimeComp.TickRateMultiplier): plain loop, no LINQ/closure.
+        public static MultiplayerMapComp MpComp(this Map map)
+        {
+            var list = Multiplayer.game?.mapComps;
+            if (list == null) return null;
+            for (int i = 0; i < list.Count; i++)
+                if (list[i].map == map)
+                    return list[i];
+            return null;
+        }
 
         public static T ThingReplacement<T>(this Map map, T thing) where T : Thing
         {

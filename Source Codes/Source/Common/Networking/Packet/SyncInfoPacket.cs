@@ -47,7 +47,10 @@ public record struct SyncOpinion : IPacketBufferable
     public List<uint> commandRandomStates;
     public List<uint> worldRandomStates;
     public List<MapRandomState> mapRandomStates;
-    public List<int> traceHashes;
+    // Trace hashes rolled up per timer step, as pairs: [traceCount0, hash0, traceCount1, hash1, ...].
+    // One pair per step that produced traces (at most 30 per opinion), instead of one int per traced
+    // RNG call. The full per-call list stays on each client and is only exchanged after a desync.
+    public List<int> traceStepHashes;
     public bool simulating;
     public RoundModeEnum roundMode;
 
@@ -58,9 +61,9 @@ public record struct SyncOpinion : IPacketBufferable
         buf.Bind(ref commandRandomStates, BinderOf.UInt());
         buf.Bind(ref worldRandomStates, BinderOf.UInt());
         buf.Bind(ref mapRandomStates, BinderOf.Identity<MapRandomState>());
-        // Max 2M trace hashes. For some big saves, the trace hashes can reach ~600k entries, so this includes
-        // some leeway.
-        buf.Bind(ref traceHashes, BinderOf.Int(), maxLength: 1<<21);
+        // Two ints per timer step with traces. Opinions normally cover 30 steps; the limit leaves room for
+        // longer opinions without allowing unbounded allocations.
+        buf.Bind(ref traceStepHashes, BinderOf.Int(), maxLength: 1<<16);
 
         buf.Bind(ref simulating);
         buf.BindEnum(ref roundMode);

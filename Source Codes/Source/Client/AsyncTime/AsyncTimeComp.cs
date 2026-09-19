@@ -85,6 +85,7 @@ namespace Multiplayer.Client
         private TimeSpeed timeSpeedInt;
         public bool forcedNormalSpeed;
         public int eventCount;
+        public int pendingVisualTicks; // ticks since the pawn visuals were last processed (not saved)
 
         public TimeSlower slower = new();
 
@@ -98,7 +99,7 @@ namespace Multiplayer.Client
         public Queue<ScheduledCommand> cmds = new();
 
         public int CurrentPlayerCount { get; private set; }
-        public int VTR => CurrentPlayerCount > 0 ? VTRSync.MinimumVtr : VTRSync.MaximumVtr;
+        public int VTR => CurrentPlayerCount > 0 ? VTRSync.ViewedMapVtr : VTRSync.MaximumVtr;
 
         public AsyncTimeComp(Map map, int gameStartAbsTick = 0)
         {
@@ -137,11 +138,10 @@ namespace Multiplayer.Client
                 mapTicks++;
                 Find.TickManager.ticksGameInt = mapTicks;
 
-                //Either This line or PathFinderPatch can be commented out
-                //ForeCompeleScheduledJobs here can prevent all Multithread Races,
-                //but also force pathfinder to be done before tick runing
-                //PathFinderPatch is the other way try to snapshot everything worker threads are using
-                map.pathFinder.ForceCompleteScheduledJobs();
+                // Path jobs scheduled in MapPreTick read live data unless ConcurrentPathfinding fixed
+                // their inputs at schedule time. Without it, wait for them before ticking anything.
+                if (!Patches.ConcurrentPathfinding.Active)
+                    map.pathFinder.ForceCompleteScheduledJobs();
 
                 tickListNormal.Tick();
                 tickListRare.Tick();
@@ -155,9 +155,10 @@ namespace Multiplayer.Client
                 QuestManagerTickAsyncTime();
 
                 map.MapPostTick();
-                Find.TickManager.ticksThisFrame = 1;
-                map.postTickVisuals.ProcessPostTickVisuals();
-                Find.TickManager.ticksThisFrame = 0;
+                // Only the parts the simulation reads (rotation, jitter, lean, animation) run here; the rest runs once per frame
+                // in Map.MapUpdate with the number of ticks since then (PostTickVisualsPerFrame).
+                PostTickVisualsPerFrame.TickSimulationVisuals(map);
+                pendingVisualTicks++;
 
                 UpdateManagers();
                 CacheNothingHappening();
@@ -203,6 +204,7 @@ namespace Multiplayer.Client
                 force: true);
 
             prevTime = TimeSnapshot.GetAndSetFromMap(map);
+            SimulationCaches.InvalidateFrameKeyed();
 
             Rand.PushState();
             Rand.StateCompressed = randState;
@@ -467,17 +469,43 @@ namespace Multiplayer.Client
 
         private void CacheNothingHappening()
         {
+            // Only Superfast reads this (12x instead of 6x). Skip the colonist scan unless some tickable is at
+            // Superfast; in that case the value stays false (6x) until the end of the first Superfast tick.
+            // Both are synchronized state, so every client does the same.
+            if (!AnyTickableAtSuperfast())
+            {
+                nothingHappeningCached = false;
+                return;
+            }
+
             nothingHappeningCached = true;
             var list = map.mapPawns.SpawnedPawnsInFaction(Faction.OfPlayer);
 
-            foreach (var pawn in list)
+            for (int i = 0; i < list.Count; i++)
             {
+                var pawn = list[i];
                 if (pawn.HostFaction == null && pawn.RaceProps.Humanlike && pawn.Awake())
+                {
                     nothingHappeningCached = false;
+                    break;
+                }
             }
 
             if (nothingHappeningCached && map.IsPlayerHome && map.dangerWatcher.DangerRating >= StoryDanger.Low)
                 nothingHappeningCached = false;
+        }
+
+        private static bool AnyTickableAtSuperfast()
+        {
+            // In async mode each map uses its own speed; otherwise the rate is resolved across all tickables.
+            // Loop over the current maps: game.asyncTimeComps can still hold comps of removed maps on peers
+            // that didn't reload since, which would make the result differ between peers.
+            if (Multiplayer.AsyncWorldTime.timeSpeedInt == TimeSpeed.Superfast) return true;
+            var maps = Find.Maps;
+            for (int i = 0; i < maps.Count; i++)
+                if (maps[i].AsyncTime()?.timeSpeedInt == TimeSpeed.Superfast)
+                    return true;
+            return false;
         }
 
         public override string ToString()

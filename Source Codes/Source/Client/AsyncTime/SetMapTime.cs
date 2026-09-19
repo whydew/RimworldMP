@@ -204,6 +204,7 @@ namespace Multiplayer.Client
     {
         public int ticks;
         public TimeSpeed speed;
+        public bool hyperspeed;
         public TimeSlower slower;
         public int gameStartAbsTick;
 
@@ -211,7 +212,7 @@ namespace Multiplayer.Client
         {
             Find.TickManager.ticksGameInt = ticks;
             Find.TickManager.slower = slower;
-            Find.TickManager.curTimeSpeed = speed;
+            MpTimeSpeed.Restore(Find.TickManager, speed, hyperspeed);
             Find.TickManager.gameStartAbsTick = gameStartAbsTick;
         }
 
@@ -221,6 +222,7 @@ namespace Multiplayer.Client
             {
                 ticks = Find.TickManager.ticksGameInt,
                 speed = Find.TickManager.curTimeSpeed,
+                hyperspeed = MpTimeSpeed.VanillaHoldsHyperspeed,
                 slower = Find.TickManager.slower,
                 gameStartAbsTick = Find.TickManager.gameStartAbsTick
             };
@@ -237,7 +239,7 @@ namespace Multiplayer.Client
 
             tickManager.ticksGameInt = mapComp.mapTicks;
             tickManager.slower = mapComp.slower;
-            tickManager.CurTimeSpeed = mapComp.DesiredTimeSpeed;
+            MpTimeSpeed.SetOn(tickManager, mapComp.DesiredTimeSpeed);
             tickManager.gameStartAbsTick = mapComp.GameStartAbsTick;
 
             return prev;

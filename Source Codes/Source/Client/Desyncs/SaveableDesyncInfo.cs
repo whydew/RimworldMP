@@ -79,8 +79,8 @@ public class SaveableDesyncInfo(
     private string GetLocalTraces()
     {
         var traceMessage = "";
-        var localCount = local.desyncStackTraceHashes.Count;
-        var remoteCount = remote.desyncStackTraceHashes.Count;
+        var localCount = local.TraceCount;
+        var remoteCount = remote.TraceCount;
         int count = Math.Min(localCount, remoteCount);
 
         if (diffAt == -1)
@@ -94,8 +94,8 @@ public class SaveableDesyncInfo(
         }
         else if (!diffAtFound)
         {
-            traceMessage = "Note: traces differ in amount, but the existing ones are equal. This means that a tick" +
-                           " has ended sooner on one of the connection sides\n\n";
+            traceMessage = "Note: traces differ in amount (number of traced timer steps), but the common steps are equal." +
+                           " This means that a tick has ended sooner on one of the connection sides\n\n";
         }
 
         traceMessage += local.GetFormattedStackTracesForRange(diffAt);

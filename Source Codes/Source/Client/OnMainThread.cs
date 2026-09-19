@@ -63,6 +63,7 @@ namespace Multiplayer.Client
         public void OnApplicationQuit()
         {
             JittedMethods.OnApplicationQuit();
+            Util.MpDiagLog.Flush();
             Multiplayer.StopMultiplayer();
         }
 

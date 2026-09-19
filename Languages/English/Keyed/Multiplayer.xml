@@ -207,6 +207,12 @@
   <MpLogDesyncTraces>Desync traces</MpLogDesyncTraces>
   <MpLogDesyncTracesDesc1>Log extra stacktraces for troubleshooting desyncs.</MpLogDesyncTracesDesc1>
   <MpLogDesyncTracesDesc2>Does not work on 32 bit and ARM (Apple Silicon) processors.</MpLogDesyncTracesDesc2>
+  <MpArchonexusChooseThings>Choose what to take to the new colony</MpArchonexusChooseThings>
+  <MpArchonexusChooseSite>Choose the new colony site</MpArchonexusChooseSite>
+  <MpArchonexusOtherChoosing>Another player chose what to take to the new colony and is now picking the site.</MpArchonexusOtherChoosing>
+  <MpArchonexusMultifaction>Founding a new colony through the Archonexus isn't supported in multifaction games.</MpArchonexusMultifaction>
+  <MpLogDesyncTracesHyperspeed>At Hyperspeed</MpLogDesyncTracesHyperspeed>
+  <MpLogDesyncTracesHyperspeedDesc>Also record desync traces while a map or the world runs at Hyperspeed. Tracing is expensive at that speed, so it is off by default.</MpLogDesyncTracesHyperspeedDesc>
   <MpExperimentalFeature>Experimental feature</MpExperimentalFeature>
   <MpSyncConfigs>Sync configs</MpSyncConfigs>
   <MpSyncConfigsDescNew1>Toggle whether joining players can download your mod configuration files.</MpSyncConfigsDescNew1>

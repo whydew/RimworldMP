@@ -172,7 +172,15 @@ namespace Multiplayer.Client.Comp
         /// <param name="quest">Quest to remove</param>
         /// <returns>If quest is found in cache</returns>
         public static bool TryRemoveCachedQuest(Quest quest)
-            => mapQuestsCache.SingleOrDefault(x => x.Value.Contains(quest)).Value?.Remove(quest) ?? false | worldQuestsCache.Remove(quest);
+        {
+            // Same result as the previous LINQ version (which only reached worldQuestsCache when no map held
+            // the quest, because `|` binds tighter than `??`), without the closure/iterator allocations.
+            foreach (var entry in mapQuestsCache)
+                if (entry.Value.Contains(quest))
+                    return entry.Value.Remove(quest);
+
+            return worldQuestsCache.Remove(quest);
+        }
 
         /// <summary>
         /// Attempts to get the MapAsyncTimeComp cached for that quest
@@ -182,7 +190,10 @@ namespace Multiplayer.Client.Comp
         public static AsyncTimeComp TryGetCachedQuestMap(Quest quest)
         {
             if (!Multiplayer.GameComp.asyncTime || quest == null) return null;
-            return mapQuestsCache.FirstOrDefault(x => x.Value.Contains(quest)).Key;
+            foreach (var entry in mapQuestsCache)
+                if (entry.Value.Contains(quest))
+                    return entry.Key;
+            return null;
         }
 
         /// <summary>
@@ -248,11 +259,29 @@ namespace Multiplayer.Client.Comp
         /// Runs QuestTick() on all quests passed
         /// </summary>
         /// <param name="quests">Quests to run QuestTick() on</param>
-        private static void TickQuests(IEnumerable<Quest> quests)
+        // Reused snapshot buffers (a quest tick can end quests and change the cached list). One buffer per
+        // nesting level, so a quest tick that ticks quests again doesn't overwrite the outer snapshot.
+        private static readonly List<List<Quest>> tickBuffers = new();
+        private static int tickDepth;
+
+        private static void TickQuests(List<Quest> quests)
         {
-            foreach (var quest in quests.ToList())
+            if (quests.Count == 0) return;
+
+            if (tickDepth == tickBuffers.Count)
+                tickBuffers.Add(new List<Quest>());
+            var buffer = tickBuffers[tickDepth++];
+            buffer.AddRange(quests);
+
+            try
             {
-                quest.QuestTick();
+                for (int i = 0; i < buffer.Count; i++)
+                    buffer[i].QuestTick();
+            }
+            finally
+            {
+                buffer.Clear();
+                tickDepth--;
             }
         }
 

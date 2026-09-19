@@ -25,7 +25,10 @@ namespace Multiplayer.Common
             Server = server;
         }
 
-        private const int MaxFreezeWaitTime = GenTicks.TicksPerRealSecond * 10; // 10 seconds
+        // How long to keep the game frozen for other players after the host unfroze. Gravship cutscenes
+        // take 10+ s plus capture time, and clients with the cutscene on finish after a host with it off,
+        // so this must be well above the cutscene length.
+        private const int MaxFreezeWaitTime = GenTicks.TicksPerRealSecond * 60; // 60 seconds
 
         public void Tick()
         {

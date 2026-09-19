@@ -37,6 +37,8 @@ namespace Multiplayer.Client
         public MultiplayerGame()
         {
             DeferredStackTracing.acc = 0;
+            SimulationCaches.ClearAll();
+            Patches.GravshipCutsceneSync.Reset();
 
             Toils_Ingest.cardinals = GenAdj.CardinalDirections.ToList();
             Toils_Ingest.diagonals = GenAdj.DiagonalDirections.ToList();

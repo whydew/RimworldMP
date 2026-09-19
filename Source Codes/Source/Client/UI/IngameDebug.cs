@@ -33,7 +33,7 @@ public static class IngameDebug
             text.AppendLine($"Tick Time: {TickPatch.tickTimer.ElapsedMilliseconds}ms{separator}Avg: {avgTickTime = (avgTickTime * 59.0 + TickPatch.tickTimer.ElapsedMilliseconds) / 60.0:0.0000}ms");
             text.AppendLine($"Avg Delta: {avgDelta = (avgDelta * 59.0 + Time.deltaTime * 60.0) / 60.0:0.0000}");
             text.AppendLine($"Game Ticks: {Find.TickManager.TicksGame}");
-            text.AppendLine($"Time Speed: {Find.TickManager.CurTimeSpeed}");
+            text.AppendLine($"Time Speed: {MpTimeSpeed.GetFrom(Find.TickManager)}");
             text.AppendLine($"Tick Until: {TickPatch.tickUntil}{separator}Remote: {Multiplayer.session?.remoteTickUntil ?? 0}");
             text.AppendLine($"Received Commands: {Multiplayer.session?.receivedCmds ?? 0}");
             text.AppendLine($"Sent Commands: {Multiplayer.session?.remoteSentCmds ?? 0}");

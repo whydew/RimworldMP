@@ -26,5 +26,43 @@ namespace Multiplayer.Client
 
         /// <summary>Highest selectable speed value (used as the upper bound for UI/hotkey stepping).</summary>
         public const TimeSpeed Highest = Hyperspeed;
+
+        // Vanilla code switches on TickManager.CurTimeSpeed and throws or misbehaves on values it
+        // doesn't know (e.g. Pawn_CallTracker.IdleCallVolumeFactor throws NotImplementedException,
+        // SubSoundDef.gameSpeedRange silences sounds). So (TimeSpeed)5 must never be written into
+        // the vanilla TickManager. Hyperspeed is stored there as Ultrafast, and this flag remembers
+        // that the Ultrafast currently in the TickManager is really Hyperspeed.
+        private static bool vanillaHoldsHyperspeed;
+
+        public static bool VanillaHoldsHyperspeed => vanillaHoldsHyperspeed;
+
+        /// <summary>The value that is safe to store in vanilla's TickManager.</summary>
+        public static TimeSpeed ToVanilla(TimeSpeed speed) =>
+            speed > TimeSpeed.Ultrafast ? TimeSpeed.Ultrafast : speed;
+
+        /// <summary>
+        /// Sets the vanilla TickManager's speed, clamping Hyperspeed to Ultrafast. Writes the field directly:
+        /// the CurTimeSpeed setter refuses (and posts a message) while the player can't control time, but
+        /// this only switches the time context to the ticking map/world.
+        /// </summary>
+        public static void SetOn(TickManager tickManager, TimeSpeed speed)
+        {
+            tickManager.curTimeSpeed = ToVanilla(speed);
+            vanillaHoldsHyperspeed = speed > TimeSpeed.Ultrafast;
+        }
+
+        /// <summary>Raw restore used by TimeSnapshot (bypasses the PlayerCanControl check, like the original).</summary>
+        internal static void Restore(TickManager tickManager, TimeSpeed vanillaSpeed, bool holdsHyperspeed)
+        {
+            tickManager.curTimeSpeed = ToVanilla(vanillaSpeed);
+            vanillaHoldsHyperspeed = holdsHyperspeed;
+        }
+
+        /// <summary>The MP speed currently represented by the vanilla TickManager (Hyperspeed-aware).</summary>
+        public static TimeSpeed GetFrom(TickManager tickManager)
+        {
+            var speed = tickManager.curTimeSpeed;
+            return vanillaHoldsHyperspeed && speed == TimeSpeed.Ultrafast ? Hyperspeed : speed;
+        }
     }
 }

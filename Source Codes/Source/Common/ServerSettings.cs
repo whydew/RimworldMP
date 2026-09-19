@@ -22,6 +22,7 @@ namespace Multiplayer.Common
         public bool multifaction;
         public bool debugMode;
         public bool desyncTraces = true;
+        public bool desyncTracesAtHyperspeed;
         public bool syncConfigs = true;
         public AutoJoinPointFlags autoJoinPoint = AutoJoinPointFlags.Join | AutoJoinPointFlags.Desync;
         public DevModeScope devModeScope;
@@ -64,6 +65,7 @@ namespace Multiplayer.Common
             ScribeLike.Look(ref multifaction, "multifaction");
             ScribeLike.Look(ref debugMode, "debugMode");
             ScribeLike.Look(ref desyncTraces, "desyncTraces", true);
+            ScribeLike.Look(ref desyncTracesAtHyperspeed, "desyncTracesAtHyperspeed");
             ScribeLike.Look(ref syncConfigs, "syncConfigs", true);
             ScribeLike.Look(ref autoJoinPoint, "autoJoinPoint", AutoJoinPointFlags.Join | AutoJoinPointFlags.Desync);
             ScribeLike.Look(ref devModeScope, "devModeScope");
@@ -101,6 +103,7 @@ namespace Multiplayer.Common
             buf.Bind(ref settings.pauseOnJoin);
             buf.Bind(ref settings.pauseOnDesync);
             buf.BindEnum(ref settings.timeControl);
+            buf.Bind(ref settings.desyncTracesAtHyperspeed);
         };
     }
 

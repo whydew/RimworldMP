@@ -15,8 +15,8 @@ namespace Multiplayer.Client.Patches
             if (Multiplayer.Client == null)
                 return true;
 
-            // Keep the synchronized update rate until animation timing can be
-            // brought back in line with the vanilla value.
+            // Vanilla picks the rate from the local camera (1-5 in view, 15 elsewhere), which
+            // differs per player, so MP uses one rate per map that every client agrees on.
             __result = VTRSync.GetSynchronizedUpdateRate(thing);
             return false;
         }
@@ -30,7 +30,11 @@ namespace Multiplayer.Client.Patches
             if (Multiplayer.Client == null)
                 return true;
 
-            __result = __instance.Spawned ? VTRSync.GetSynchronizedUpdateRate(__instance) : VTRSync.MaximumVtr;
+            // Projectiles move in TickInterval, so keep them at 1 on viewed maps (like vanilla in view)
+            // to avoid visibly choppy flight.
+            __result = __instance.Spawned && __instance.Map.AsyncTime() is { CurrentPlayerCount: > 0 }
+                ? VTRSync.MinimumVtr
+                : VTRSync.MaximumVtr;
             return false;
         }
     }
@@ -59,6 +63,13 @@ namespace Multiplayer.Client.Patches
         // Vtr rates
         public const int MaximumVtr = 15;
         public const int MinimumVtr = 1;
+
+        // Rate for things on a map at least one player is viewing. Vanilla uses zoom+1 (1-5) for
+        // things in view and 15 for the rest; running every Thing's TickInterval every tick on a
+        // viewed map (the old value, 1) is 1.6's worst case applied to the whole map. 3 matches
+        // vanilla's middle zoom. Changing this changes simulation results, so every client must
+        // use the same build.
+        public const int ViewedMapVtr = 3;
 
         public static int GetSynchronizedUpdateRate(Thing thing) => thing?.MapHeld?.AsyncTime()?.VTR ?? MaximumVtr;
 

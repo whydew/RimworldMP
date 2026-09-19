@@ -135,22 +135,28 @@ namespace Multiplayer.Client
             ));
         }
 
+        /// <summary>
+        /// Returns the index (into the local trace list) of the first trace of the first timer step whose
+        /// rolling hash differs between the two opinions.
+        /// </summary>
         private static int FindTraceHashesDiffTick(ClientSyncOpinion local, ClientSyncOpinion remote, out bool found)
         {
             found = true;
-            //Find the length of whichever stack trace is shorter.
-            var localCount = local.desyncStackTraceHashes.Count;
-            var remoteCount = remote.desyncStackTraceHashes.Count;
-            int count = Math.Min(localCount, remoteCount);
+            var localSteps = local.TraceStepCount;
+            var remoteSteps = remote.TraceStepCount;
+            int steps = Math.Min(localSteps, remoteSteps);
 
-            //Find the point at which the hashes differ - this is where the desync occurred.
-            for (int i = 0; i < count; i++)
-                if (local.desyncStackTraceHashes[i] != remote.desyncStackTraceHashes[i])
-                    return i;
+            var traceIndex = 0;
+            for (int i = 0; i < steps; i++)
+            {
+                if (local.TraceStepSize(i) != remote.TraceStepSize(i) || local.TraceStepHash(i) != remote.TraceStepHash(i))
+                    return traceIndex;
+                traceIndex += local.TraceStepSize(i);
+            }
 
             found = false;
-            if (localCount != remoteCount)
-                return count - 1;
+            if (localSteps != remoteSteps)
+                return Math.Max(0, traceIndex - 1);
 
             return -1;
         }
@@ -209,7 +215,7 @@ namespace Multiplayer.Client
                 info2 = info2,
             });
 
-            OpinionInBuilding.desyncStackTraceHashes.Add(hash);
+            OpinionInBuilding.AddTraceHash(hash);
         }
 
         public void TryAddStackTraceForDesyncLogRaw(StackTraceLogItemRaw item, int depth, int hashIn, string moreInfo = null)
@@ -237,8 +243,8 @@ namespace Multiplayer.Client
 
             OpinionInBuilding.desyncStackTraces.Add(item);
 
-            // Track & network trace hash, for comparison with other opinions.
-            OpinionInBuilding.desyncStackTraceHashes.Add(hash);
+            // Track the trace hash; its per-step rollup is networked for comparison with other opinions.
+            OpinionInBuilding.AddTraceHash(hash);
         }
 
         public static string MethodNameWithIL(string rawName)

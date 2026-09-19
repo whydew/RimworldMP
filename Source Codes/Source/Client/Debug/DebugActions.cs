@@ -206,6 +206,21 @@ namespace Multiplayer.Client
             Log.Message(timing.ToStringFullContents());
         }
 
+        // Synced like every debug action (DebugSync), so all players switch at the same point.
+        [DebugAction(MultiplayerCategory, "Toggle concurrent pathfinding", allowedGameStates = AllowedGameStates.Playing)]
+        public static void ToggleConcurrentPathfinding()
+        {
+            var comp = Multiplayer.GameComp;
+            if (comp == null) return;
+
+            // Finish anything already running before switching modes.
+            foreach (var map in Find.Maps)
+                map.pathFinder.ForceCompleteScheduledJobs();
+
+            comp.concurrentPathfinding = !comp.concurrentPathfinding;
+            Log.Message($"MP: concurrent pathfinding {(comp.concurrentPathfinding ? "enabled" : "disabled")}");
+        }
+
         [DebugAction(MultiplayerCategory, "Save Game", allowedGameStates = AllowedGameStates.Playing)]
         public static void SaveGame()
         {

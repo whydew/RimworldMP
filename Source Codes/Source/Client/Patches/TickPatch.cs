@@ -166,23 +166,38 @@ namespace Multiplayer.Client
 
         private static bool RunCmds()
         {
+            // Wait (no commands, no ticks) until this client's gravship cutscene has caught up.
+            if (Patches.GravshipCutsceneSync.HoldingSimulation) return true;
+
             int curTimer = Timer;
 
-            foreach (ITickable tickable in AllTickables)
-            {
-                while (tickable.Cmds.Count > 0 && tickable.Cmds.Peek().ticks == curTimer)
-                {
-                    ScheduledCommand cmd = tickable.Cmds.Dequeue();
-                    // Minimal code impact fix for #733. Having all the commands be added to a single queue gets rid of
-                    // the out-of-order execution problem. With a proper fix, this can be reverted to tickable.ExecuteCmd
-                    var target = TickableById(cmd.mapId);
-                    if (target == null)
-                    {
-                        Log.Error($"!!! Tickable of {cmd.mapId} not found! {cmd}");
-                    } else target.ExecuteCmd(cmd);
+            // Same order as AllTickables (world, then maps from last to first), without the iterator allocation.
+            // Find.Maps is read after the world's commands ran, like the iterator did.
+            if (RunCmdsFor(Multiplayer.AsyncWorldTime, curTimer)) return true;
 
-                    if (LongEventHandler.eventQueue.Count > 0) return true; // Yield to e.g. join-point creation
-                }
+            var maps = Find.Maps;
+            for (int m = maps.Count - 1; m >= 0; m--)
+                if (RunCmdsFor(maps[m].AsyncTime(), curTimer)) return true;
+
+            return false;
+        }
+
+        private static bool RunCmdsFor(ITickable tickable, int curTimer)
+        {
+            while (tickable.Cmds.Count > 0 && tickable.Cmds.Peek().ticks == curTimer)
+            {
+                ScheduledCommand cmd = tickable.Cmds.Dequeue();
+                // Minimal code impact fix for #733. Having all the commands be added to a single queue gets rid of
+                // the out-of-order execution problem. With a proper fix, this can be reverted to tickable.ExecuteCmd
+                var target = TickableById(cmd.mapId);
+                if (target == null)
+                {
+                    Log.Error($"!!! Tickable of {cmd.mapId} not found! {cmd}");
+                } else target.ExecuteCmd(cmd);
+
+                if (LongEventHandler.eventQueue.Count > 0) return true; // Yield to e.g. join-point creation
+                // A command can start a gravship cutscene; stop right here on every client, before any tick.
+                if (Patches.GravshipCutsceneSync.HoldingSimulation) return true;
             }
 
             return false;
@@ -216,14 +231,13 @@ namespace Multiplayer.Client
         {
             tickTimer.Restart();
 
-            foreach (ITickable tickable in AllTickables)
-            {
-                if (tickable.TimePerTick(tickable.DesiredTimeSpeed) == 0) continue;
-                tickable.TimeToTickThrough += 1f;
+            // Same order as AllTickables (world, then maps from last to first), without the iterator allocation.
+            // Find.Maps is read after the world ticked, like the iterator did.
+            TickIfRunning(Multiplayer.AsyncWorldTime, ref worked);
 
-                worked = true;
-                TickTickable(tickable);
-            }
+            var maps = Find.Maps;
+            for (int m = maps.Count - 1; m >= 0; m--)
+                TickIfRunning(maps[m].AsyncTime(), ref worked);
 
             ConstantTicker.Tick();
 
@@ -239,6 +253,15 @@ namespace Multiplayer.Client
             }
 
             return false;
+        }
+
+        private static void TickIfRunning(ITickable tickable, ref bool worked)
+        {
+            if (tickable.TimePerTick(tickable.DesiredTimeSpeed) == 0) return;
+            tickable.TimeToTickThrough += 1f;
+
+            worked = true;
+            TickTickable(tickable);
         }
 
         private static void TickTickable(ITickable tickable)
@@ -275,11 +298,12 @@ namespace Multiplayer.Client
             return tickable.ActualRateMultiplier(tickable.DesiredTimeSpeed) / tickable.ActualRateMultiplier(replayTimeSpeed);
         }
 
+        // Evaluated for every game tick inside a timer step (not cached for the step: pausing sessions,
+        // forced normal speed and the "nothing happening" state can change between those ticks).
         public static float TimePerTick(this ITickable tickable, TimeSpeed speed)
         {
-            if (tickable.ActualRateMultiplier(speed) == 0f)
-                return 0f;
-            return 1f / tickable.ActualRateMultiplier(speed);
+            var rate = tickable.ActualRateMultiplier(speed);
+            return rate == 0f ? 0f : 1f / rate;
         }
 
         public static float ActualRateMultiplier(this ITickable tickable, TimeSpeed speed)
@@ -288,8 +312,9 @@ namespace Multiplayer.Client
                 return tickable.TickRateMultiplier(speed);
 
             var rate = Multiplayer.AsyncWorldTime.TickRateMultiplier(speed);
-            foreach (var map in Find.Maps)
-                rate = Math.Min(rate, map.AsyncTime().TickRateMultiplier(speed));
+            var maps = Find.Maps;
+            for (int i = 0; i < maps.Count; i++)
+                rate = Math.Min(rate, maps[i].AsyncTime().TickRateMultiplier(speed));
 
             return rate;
         }

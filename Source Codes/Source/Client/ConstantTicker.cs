@@ -97,13 +97,20 @@ namespace Multiplayer.Client
             }
             else if (server.settings.autosaveUnit == AutosaveUnit.Days && server.settings.autosaveInterval > 0)
             {
-                var anyMapCounterUp =
-                    Multiplayer.game.mapComps
-                    .Any(m => m.autosaveCounter > server.settings.autosaveInterval * TicksPerIngameDay);
+                var threshold = server.settings.autosaveInterval * TicksPerIngameDay;
+                var mapComps = Multiplayer.game.mapComps;
+                var anyMapCounterUp = false;
+                for (int i = 0; i < mapComps.Count; i++)
+                    if (mapComps[i].autosaveCounter > threshold)
+                    {
+                        anyMapCounterUp = true;
+                        break;
+                    }
 
                 if (anyMapCounterUp)
                 {
-                    Multiplayer.game.mapComps.Do(m => m.autosaveCounter = 0);
+                    for (int i = 0; i < mapComps.Count; i++)
+                        mapComps[i].autosaveCounter = 0;
                     Autosaving.DoAutosave();
                 }
             }

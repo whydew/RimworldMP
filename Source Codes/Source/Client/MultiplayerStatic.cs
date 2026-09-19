@@ -363,15 +363,30 @@ namespace Multiplayer.Client
                 var thingMethodFinalizer = new HarmonyMethod(typeof(ThingMethodPatches).GetMethod(nameof(ThingMethodPatches.Finalizer)));
                 var thingMethodPrefixSpawnSetup = new HarmonyMethod(typeof(ThingMethodPatches).GetMethod(nameof(ThingMethodPatches.Prefix_SpawnSetup)));
 
-                var thingMethods = new[]
+                var thingMethodPrefixTick = new HarmonyMethod(typeof(ThingMethodPatches).GetMethod(nameof(ThingMethodPatches.Prefix_Tick)));
+
+                // In 1.6 every vanilla Tick/TickRare/TickLong/TickInterval call goes through Thing.DoTick
+                // (tick lists, ThingOwner.DoTick for held things, world pawns, trade ships, ...). One patch there
+                // sets the context for the whole tick, including base calls, instead of a patch on every
+                // override. Modded Thing types keep per-override patches in case a mod calls Tick() directly;
+                // those skip the push when DoTick already set it.
+                TryPatch(AccessTools.Method(typeof(Thing), nameof(Thing.DoTick)), thingMethodPrefix, finalizer: thingMethodFinalizer);
+
+                var tickMethods = new[]
                 {
                     ("Tick", Type.EmptyTypes),
                     ("TickRare", Type.EmptyTypes),
                     ("TickLong", Type.EmptyTypes),
                     ("TickInterval", [typeof(int)]),
-                    ("TakeDamage", [typeof(DamageInfo)]),
-                    ("Kill", [typeof(DamageInfo?), typeof(Hediff)])
                 };
+
+                var otherMethods = new[]
+                {
+                    ("TakeDamage", [typeof(DamageInfo)]),
+                    ("Kill", new[] { typeof(DamageInfo?), typeof(Hediff) })
+                };
+
+                var vanillaAssembly = typeof(Thing).Assembly;
 
                 foreach (Type t in typeof(Thing).AllSubtypesAndSelf())
                 {
@@ -380,7 +395,17 @@ namespace Multiplayer.Client
                     if (spawnSetupMethod != null)
                         TryPatch(spawnSetupMethod, thingMethodPrefixSpawnSetup, finalizer: thingMethodFinalizer);
 
-                    foreach ((string m, Type[] args) in thingMethods)
+                    if (t.Assembly != vanillaAssembly)
+                    {
+                        foreach ((string m, Type[] args) in tickMethods)
+                        {
+                            MethodInfo method = t.GetMethod(m, BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly | BindingFlags.NonPublic, null, args, null);
+                            if (method != null && !method.IsAbstract)
+                                TryPatch(method, thingMethodPrefixTick, finalizer: thingMethodFinalizer);
+                        }
+                    }
+
+                    foreach ((string m, Type[] args) in otherMethods)
                     {
                         MethodInfo method = t.GetMethod(m, BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly | BindingFlags.NonPublic, null, args, null);
                         if (method != null)

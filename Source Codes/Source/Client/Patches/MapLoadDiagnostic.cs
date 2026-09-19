@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Multiplayer.Client.Util;
 using Verse;
 
 namespace Multiplayer.Client
@@ -13,13 +14,14 @@ namespace Multiplayer.Client
     // it starts TICKING (-> P1: caches / current-map view leak).
     //
     // Lines are prefixed [MPMAPLOAD] and keyed by (map uniqueID, mapTicks), so the
-    // two players' Player.logs diff directly. Toggle: MapLoadDiagnostic.Enabled=false.
+    // two players' MpLogs/MpDiagnostics.log files diff directly. Off by default:
+    // turn on "Diagnostic logging" in the MP settings (dev mode).
     // Remove this file (and its two call sites in MapSetup.SetupMap and
     // AsyncTimeComp.Tick) once the map-load fix is confirmed.
     // ---------------------------------------------------------------------------
     public static class MapLoadDiagnostic
     {
-        public static bool Enabled = true;
+        public static bool Enabled => MpDiagLog.Enabled;
         private const int TicksToLog = 20;
 
         // map.uniqueID -> remaining first-ticks to log
@@ -31,7 +33,7 @@ namespace Multiplayer.Client
             try
             {
                 tracked[map.uniqueID] = TicksToLog;
-                Log.Message($"[MPMAPLOAD] setup map={map.uniqueID} startMapTicks={async.mapTicks} " +
+                MpDiagLog.Write($"[MPMAPLOAD] setup map={map.uniqueID} startMapTicks={async.mapTicks} " +
                             $"gameStartAbsTick={async.GameStartAbsTick} randState={async.randState} " +
                             $"desiredSpeed={async.DesiredTimeSpeed} curMap={CurMap()} timer={TickPatch.Timer}");
             }
@@ -45,7 +47,7 @@ namespace Multiplayer.Client
             {
                 if (!tracked.TryGetValue(async.map.uniqueID, out var left) || left <= 0) return;
                 tracked[async.map.uniqueID] = left - 1;
-                Log.Message($"[MPMAPLOAD] tick map={async.map.uniqueID} mapTicks={async.mapTicks} " +
+                MpDiagLog.Write($"[MPMAPLOAD] tick map={async.map.uniqueID} mapTicks={async.mapTicks} " +
                             $"randState={async.randState} forceNormalUntil={async.slower.forceNormalSpeedUntil} " +
                             $"curMap={CurMap()} timer={TickPatch.Timer}");
             }

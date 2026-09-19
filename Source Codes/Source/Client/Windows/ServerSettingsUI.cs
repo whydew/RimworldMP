@@ -114,6 +114,10 @@ public static class ServerSettingsUI
         MpUI.CheckboxLabeledWithTipNoHighlight(entry.Width(CheckboxWidth), $"{"MpLogDesyncTraces".Translate()}:  ",
             MpUtil.TranslateWithDoubleNewLines("MpLogDesyncTracesDesc", 2), ref settings.desyncTraces,
             placeTextNearCheckbox: true);
+        if (settings.desyncTraces)
+            MpUI.CheckboxLabeledWithTipNoHighlight(entry.Right(CheckboxWidth + 10).Width(CheckboxWidth + 40),
+                $"{"MpLogDesyncTracesHyperspeed".Translate()}:  ", "MpLogDesyncTracesHyperspeedDesc".Translate(),
+                ref settings.desyncTracesAtHyperspeed, placeTextNearCheckbox: true);
         entry = entry.Down(30);
 
         if (MpVersion.IsDebug)

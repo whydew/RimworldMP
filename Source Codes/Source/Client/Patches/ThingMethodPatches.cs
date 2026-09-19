@@ -131,6 +131,18 @@ namespace Multiplayer.Client
                 __instance.Map.PushFaction(__instance.Faction);
         }
 
+        // For per-override Tick*/TickInterval patches (modded Thing types only, see MultiplayerStatic).
+        // When the override runs inside Thing.DoTick, DoTick already pushed this thing's context, so skip
+        // the duplicate push. Direct calls from mod code still get the context.
+        [HarmonyPriority(MpPriority.MpFirst)]
+        public static void Prefix_Tick(Thing __instance, ref Container<Map>? __state)
+        {
+            if (Multiplayer.Client == null) return;
+            if (ReferenceEquals(ThingContext.stack.Peek().Item1, __instance)) return;
+
+            Prefix(__instance, ref __state);
+        }
+
         [HarmonyPriority(MpPriority.MpFirst)]
         public static void Prefix_SpawnSetup(Thing __instance, Map __0, ref Container<Map>? __state)
         {

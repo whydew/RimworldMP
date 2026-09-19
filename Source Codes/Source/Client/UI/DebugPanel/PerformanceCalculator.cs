@@ -88,13 +88,14 @@ namespace Multiplayer.Client.DebugUi
 
             if (tickManager.Paused || tickManager.ForcePaused) return 0f;
 
-            return tickManager.CurTimeSpeed switch
+            return MpTimeSpeed.GetFrom(tickManager) switch
             {
                 TimeSpeed.Paused => 0f,
                 TimeSpeed.Normal => 60f,
                 TimeSpeed.Fast => 180f,
                 TimeSpeed.Superfast => 360f,
                 TimeSpeed.Ultrafast => 900f,
+                MpTimeSpeed.Hyperspeed => 60f * MpTimeSpeed.HyperspeedMultiplier,
                 _ => 60f
             };
         }
@@ -116,12 +117,12 @@ namespace Multiplayer.Client.DebugUi
                 else
                 {
                     currentSpeed = Multiplayer.AsyncWorldTime?.DesiredTimeSpeed ??
-                                   (tickManager.Paused ? TimeSpeed.Paused : tickManager.CurTimeSpeed);
+                                   (tickManager.Paused ? TimeSpeed.Paused : MpTimeSpeed.GetFrom(tickManager));
                 }
             }
             else
             {
-                currentSpeed = tickManager.Paused ? TimeSpeed.Paused : tickManager.CurTimeSpeed;
+                currentSpeed = tickManager.Paused ? TimeSpeed.Paused : MpTimeSpeed.GetFrom(tickManager);
             }
 
             if (currentSpeed != lastTimeSpeed)

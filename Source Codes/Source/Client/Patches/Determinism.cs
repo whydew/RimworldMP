@@ -455,84 +455,95 @@ namespace Multiplayer.Client.Patches
     [HarmonyPatch(typeof(StatWorker), nameof(StatWorker.GetValue), typeof(Thing), typeof(bool), typeof(int))]
     static class StatWorkerGetValuePatch
     {
-        private static readonly PawnCapacitiesHandler.CacheStatus CachedInInterface = (PawnCapacitiesHandler.CacheStatus)3;
+        // --- Stat cache split (replaces the P1a "never cache in simulation" fix) ---
+        // StatWorker.temporaryStatCache is one dictionary per worker, stamped with
+        // Find.TickManager.TicksGame. In MP the interface reads it with the *viewed* map's
+        // time and the simulation with the *ticking* map's time, so an interface write could
+        // change whether a later simulation read was a hit or a recompute, and that depended on
+        // what each player was looking at (desync). P1a fixed it by never using the cache in
+        // simulation, which made hot stat reads (MaxHitPoints, MaxNutrition, mental break
+        // thresholds, comfortable temperature, ...) recompute every time.
+        //
+        // Now the simulation and the interface use separate dictionaries:
+        //  - simulation (map/world ticks and commands) keeps vanilla's temporaryStatCache, so only
+        //    simulation ever writes it and hits/misses are identical on every client;
+        //  - the interface gets its own per-worker dictionary;
+        //  - other non-interface contexts (loading, reloading, long events) don't cache at all,
+        //    because they don't run identically on every client.
+        // The simulation caches are cleared on game load and at every join point, so a peer that
+        // didn't reload starts from the same (empty) state as one that did.
+        private static readonly FieldInfo TemporaryStatCacheField =
+            AccessTools.Field(typeof(StatWorker), nameof(StatWorker.temporaryStatCache));
 
-        private static FieldInfo statusField = AccessTools.Field(typeof(PawnCapacitiesHandler.CacheElement),
-            nameof(PawnCapacitiesHandler.CacheElement.status));
+        private static readonly Dictionary<StatWorker, Dictionary<Thing, StatCacheEntry>> interfaceCaches = new();
 
-        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
+        static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts, MethodBase original)
         {
-            var matcher = new CodeMatcher(insts);
+            var replaced = 0;
+            var absPatched = false;
+            var afterGameTickLoad = false;
+            var cacheFor = AccessTools.Method(typeof(StatWorkerGetValuePatch), nameof(CacheFor));
+            var gameTickField = AccessTools.Field(typeof(StatCacheEntry), nameof(StatCacheEntry.gameTick));
+            var abs = AccessTools.Method(typeof(Math), nameof(Math.Abs), new[] { typeof(int) });
 
-            // Modify cache update checking
-            matcher.MatchEndForward(
-                new CodeMatch(OpCodes.Callvirt, typeof(Dictionary<Thing, StatCacheEntry>).GetMethod("TryGetValue"))
-            ).Advance(1).Insert(
-                new CodeInstruction(OpCodes.Ldarg_0),
-                new CodeInstruction(OpCodes.Ldarg_1),
-                new CodeInstruction(OpCodes.Call,
-                    AccessTools.Method(typeof(StatWorkerGetValuePatch), nameof(HasValueInCache)))
-            );
+            foreach (var inst in insts)
+            {
+                if (inst.opcode == OpCodes.Ldfld && Equals(inst.operand, TemporaryStatCacheField))
+                {
+                    // Stack: StatWorker -> Dictionary (same shape as the field load)
+                    inst.opcode = OpCodes.Call;
+                    inst.operand = cacheFor;
+                    replaced++;
+                }
 
-            matcher.MatchEndForward(
-                new CodeMatch(OpCodes.Ldfld, typeof(StatCacheEntry).GetField(nameof(StatCacheEntry.gameTick)))
-            ).Advance(1).Insert(
-                new CodeInstruction(OpCodes.Call,
-                    AccessTools.Method(typeof(Math), nameof(Math.Abs), new[] { typeof(int) }))
-            );
+                yield return inst;
 
-            // Modify status setter
-            matcher.MatchEndForward(
-                new CodeMatch(OpCodes.Newobj)
-            ).Advance(1).Insert(
-                new CodeInstruction(OpCodes.Call,
-                    AccessTools.Method(typeof(StatWorkerGetValuePatch), nameof(NewCacheTicksCtor)))
-            );
+                if (!absPatched && inst.opcode == OpCodes.Ldfld && Equals(inst.operand, gameTickField))
+                    afterGameTickLoad = true;
 
-            // Modify status setter
-            matcher.MatchEndForward(
-                    new CodeMatch(OpCodes.Stfld, typeof(StatCacheEntry).GetField(nameof(StatCacheEntry.gameTick)))
-            ).Insert(
-                new CodeInstruction(OpCodes.Call,
-                    AccessTools.Method(typeof(StatWorkerGetValuePatch), nameof(NewCacheTicks)))
-            );
+                // `ticksGame - entry.gameTick < cacheStaleAfterTicks` -> `Math.Abs(ticksGame - entry.gameTick) < ...`
+                // Different maps (and the world) run on different clocks under async time, so an
+                // entry stamped on a clock that is ahead must count as stale, not as fresh forever.
+                if (afterGameTickLoad && inst.opcode == OpCodes.Sub)
+                {
+                    yield return new CodeInstruction(OpCodes.Call, abs);
+                    afterGameTickLoad = false;
+                    absPatched = true;
+                }
+            }
 
-            return matcher.Instructions();
+            if (replaced == 0 || !absPatched)
+                Log.Error($"MP: {nameof(StatWorkerGetValuePatch)} didn't match {original} (cache loads: {replaced}, freshness check: {absPatched})");
         }
 
-        private static bool HasValueInCache(bool hasValueInCache, StatWorker worker, Thing t)
+        internal static Dictionary<Thing, StatCacheEntry> CacheFor(StatWorker worker)
         {
-            // --- P1a async/map-load determinism fix ---
-            // temporaryStatCache is a single per-StatWorker dictionary keyed by
-            // Find.TickManager.TicksGame. Under async time that "current tick" is the
-            // *viewed* map's mapTicks while the interface runs (SetMapTimeForUI) but the
-            // *ticking* map's mapTicks during simulation (AsyncTimeComp.PreContext). A cache
-            // entry stamped while one player views map B could then be (in)correctly reused
-            // during map A's sim tick, and whether that happened depended on which map each
-            // player was looking at -> host and client took different cache hit/recompute
-            // branches -> one-RNG-call off-by-one -> desync (100% on new-map load, because a
-            // load forces the two players onto different current maps with cold caches).
-            //
-            // Fix: during simulation NEVER reuse the temporary stat cache. GetValue then
-            // recomputes the stat from deterministic pawn state, giving bit-identical results
-            // for a given (pawn, ticking map, mapTicks) on every client, independent of any
-            // player's view. The interface still uses the cache for its own rendering perf;
-            // interface-computed values never feed the simulation, so that stays harmless.
+            var vanilla = worker.temporaryStatCache;
+            if (vanilla == null || Multiplayer.Client == null)
+                return vanilla;
+
+            if (Multiplayer.Ticking || Multiplayer.ExecutingCmds)
+            {
+                // Standalone servers hand joiners snapshots taken outside join points, so peers can't be
+                // sure to start from the same (empty) cache. Don't cache simulation reads there.
+                return Multiplayer.session?.ConnectedToStandaloneServer == true ? null : vanilla;
+            }
+
             if (!Multiplayer.InInterface)
-                return false;
+                return null;
 
-            return hasValueInCache;
+            if (!interfaceCaches.TryGetValue(worker, out var ui))
+                interfaceCaches[worker] = ui = new Dictionary<Thing, StatCacheEntry>();
+            return ui;
         }
 
-        private static StatCacheEntry NewCacheTicksCtor(StatCacheEntry entry)
+        /// <summary>Drops all cached stat values (simulation and interface).</summary>
+        internal static void ClearAll()
         {
-            entry.gameTick = NewCacheTicks(entry.gameTick);
-            return entry;
-        }
+            interfaceCaches.Clear();
 
-        private static int NewCacheTicks(int gameTick)
-        {
-            return Multiplayer.InInterface ? -gameTick : gameTick;
+            foreach (var stat in DefDatabase<StatDef>.AllDefsListForReading)
+                stat.workerInt?.temporaryStatCache?.Clear();
         }
     }
 
@@ -781,20 +792,23 @@ namespace Multiplayer.Client.Patches
             Multiplayer.Client != null ? length : UnityData.GetIdealBatchCount(length);
     }
 
-    // --- Problem 2 fix: keep the animal idle-call audio path out of the deterministic tick ---
-    // Verse.Pawn_CallTracker.CallTrackerTickInterval runs the animal "idle call" system
-    // (cosmetic vocalization sounds) inside Pawn.TickInterval. In this modpack its
-    // get_IdleCallVolumeFactor throws NotImplementedException, which (a) spams the log,
-    // (b) aborts the pawn's tick partway through, and (c) makes the call path consume RNG
-    // (the "should I call" check + ResetTicksToNextCall) in a fragile, exception-dependent
-    // way -- a latent one-RNG-call off-by-one source. The idle call is purely client-side
-    // audio with no gameplay effect, so during multiplayer we skip the whole method on every
-    // client identically: zero RNG consumed, no exception thrown, fully deterministic.
-    // Single-player is untouched -- the prefix only skips when a MP client exists.
-    [HarmonyPatch(typeof(Pawn_CallTracker), nameof(Pawn_CallTracker.CallTrackerTickInterval))]
-    static class DeterministicAnimalIdleCalls
+    // --- Animal idle calls ---
+    // Pawn_CallTracker.IdleCallVolumeFactor switches on TickManager.CurTimeSpeed and throws
+    // NotImplementedException for unknown values. The old exception flood came from MP's own
+    // Hyperspeed tier ((TimeSpeed)5) being written into the TickManager; that value is now
+    // clamped to Ultrafast (MpTimeSpeed.SetOn), so idle calls run as in vanilla again. The call
+    // interval RNG is consumed identically on every client, and the sound itself runs under
+    // MP's existing sound RNG isolation. This prefix is only a safety net for any other code
+    // (e.g. another mod) that leaves an out-of-range speed in the TickManager.
+    [HarmonyPatch(typeof(Pawn_CallTracker), nameof(Pawn_CallTracker.IdleCallVolumeFactor), MethodType.Getter)]
+    static class IdleCallVolumeFactorGuard
     {
-        static bool Prefix() => Multiplayer.Client == null;
+        static bool Prefix(ref float __result)
+        {
+            if (Find.TickManager.curTimeSpeed <= TimeSpeed.Ultrafast) return true;
+            __result = 0.25f;
+            return false;
+        }
     }
 
 }

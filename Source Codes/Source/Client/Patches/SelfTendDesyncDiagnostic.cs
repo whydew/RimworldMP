@@ -3,6 +3,7 @@ using HarmonyLib;
 using RimWorld;
 using Verse;
 using Verse.AI;
+using Multiplayer.Client.Util;
 
 namespace Multiplayer.Client
 {
@@ -21,13 +22,15 @@ namespace Multiplayer.Client
     //   - pawn.health.HasHediffsNeedingTend()
     //   - count of hediffs that are TendableNow
     //
-    // Only logs during simulation (not the interface). Get BOTH players' Player.log
-    // this time (host's too) so the two sides can be diffed directly.
-    // Toggle: MpSelfTendDiag.Enabled = false;  Remove this file once the fix is in.
+    // Only logs during simulation (not the interface). Off by default: turn on
+    // "Diagnostic logging" in the MP settings (dev mode). Lines go to
+    // MpLogs/MpDiagnostics.log on each player (no stack traces, and they don't count
+    // toward RimWorld's 10k log-message limit). Collect it from BOTH players.
+    // Remove this file once the fix is in.
     // ---------------------------------------------------------------------------
     public static class MpSelfTendDiag
     {
-        public static bool Enabled = true;
+        public static bool Enabled => MpDiagLog.Enabled;
 
         public static bool ShouldLog(Pawn p)
         {
@@ -86,7 +89,7 @@ namespace Multiplayer.Client
                 if (!MpSelfTendDiag.ShouldLog(pawn)) return;
                 bool needsTend = false;
                 try { needsTend = pawn.health.HasHediffsNeedingTend(); } catch { }
-                Log.Message($"[MPSELFTEND] ShouldBeTendedNowByPlayer pawn={pawn.thingIDNumber} " +
+                MpDiagLog.Write($"[MPSELFTEND] ShouldBeTendedNowByPlayer pawn={pawn.thingIDNumber} " +
                             $"result={__result} needsTendNow={needsTend} tendableNow={MpSelfTendDiag.TendableNowCount(pawn)} " +
                             MpSelfTendDiag.Ctx(pawn));
             }
@@ -102,7 +105,7 @@ namespace Multiplayer.Client
             try
             {
                 if (!MpSelfTendDiag.ShouldLog(pawn)) return;
-                Log.Message($"[MPSELFTEND] GetMedicineCountToFullyHeal pawn={pawn.thingIDNumber} " +
+                MpDiagLog.Write($"[MPSELFTEND] GetMedicineCountToFullyHeal pawn={pawn.thingIDNumber} " +
                             $"count={__result} {MpSelfTendDiag.Ctx(pawn)}");
             }
             catch { }
@@ -126,7 +129,7 @@ namespace Multiplayer.Client
                 int count = __result.count;
                 bool willSplit = med != null && count >= 0 && count < medStack;
 
-                Log.Message($"[MPSELFTEND] JobOnThing worker={pawn.thingIDNumber} patient={t?.thingIDNumber} " +
+                MpDiagLog.Write($"[MPSELFTEND] JobOnThing worker={pawn.thingIDNumber} patient={t?.thingIDNumber} " +
                             $"selfTend={selfTend} medId={medId} medStack={medStack} count={count} willSplit={willSplit} " +
                             MpSelfTendDiag.Ctx(pawn));
             }
@@ -148,7 +151,7 @@ namespace Multiplayer.Client
 
                 bool willSplit = count < item.stackCount;
 
-                Log.Message($"[MPSELFTEND] TryStartCarry carrier={pawn.thingIDNumber} medId={item.thingIDNumber} " +
+                MpDiagLog.Write($"[MPSELFTEND] TryStartCarry carrier={pawn.thingIDNumber} medId={item.thingIDNumber} " +
                             $"medStack={item.stackCount} count={count} willSplit={willSplit} " +
                             MpSelfTendDiag.Ctx(pawn));
             }

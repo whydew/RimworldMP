@@ -457,7 +457,7 @@ namespace Multiplayer.Client.DebugUi
                     new("Next Thing ID:", $"{Find.UniqueIDsManager?.nextThingID ?? -1}", Color.white),
                     new("Next Job ID:", $"{Find.UniqueIDsManager?.nextJobID ?? -1}", Color.white),
                     new("Game Ticks:", $"{Find.TickManager?.TicksGame ?? -1}", Color.white),
-                    new("Time Speed:", $"{Find.TickManager?.CurTimeSpeed ?? TimeSpeed.Paused}", Color.white)
+                    new("Time Speed:", $"{(Find.TickManager != null ? MpTimeSpeed.GetFrom(Find.TickManager) : TimeSpeed.Paused)}", Color.white)
                 ];
 
                 return DrawSection(x, y, width, new("CORE SYSTEM", coreLines));

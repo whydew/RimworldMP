@@ -255,6 +255,14 @@ namespace Multiplayer.Client
                 ref serverSettings.desyncTraces,
                 placeTextNearCheckbox: true
             );
+            if (serverSettings.desyncTraces)
+                MpUI.CheckboxLabeledWithTipNoHighlight(
+                    entry.Right(CheckboxWidth + 10).Width(CheckboxWidth + 40),
+                    $"{"MpLogDesyncTracesHyperspeed".Translate()}:  ",
+                    "MpLogDesyncTracesHyperspeedDesc".Translate(),
+                    ref serverSettings.desyncTracesAtHyperspeed,
+                    placeTextNearCheckbox: true
+                );
             entry = entry.Down(30);
 
             // Arbiter

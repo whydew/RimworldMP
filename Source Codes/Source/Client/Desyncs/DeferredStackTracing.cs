@@ -58,8 +58,26 @@ namespace Multiplayer.Client.Desyncs
             if (Multiplayer.IsReplay) return false;
 
             if (!Multiplayer.Ticking && !Multiplayer.ExecutingCmds) return false;
+            if (ignoreTraces != 0) return false;
 
-            return ignoreTraces == 0;
+            // Host "performance mode": no traces while the ticking context runs at Hyperspeed, unless the host
+            // turned "Desync traces at Hyperspeed" on. The speed is synchronized, so every client makes the
+            // same decision and the trace hashes stay comparable.
+            if (!Multiplayer.game.gameComp.logDesyncTracesAtHyperspeed && ContextAtHyperspeed()) return false;
+
+            return true;
+        }
+
+        private static bool ContextAtHyperspeed()
+        {
+            var map = Multiplayer.MapContext;
+            if (map != null && Multiplayer.game.gameComp.asyncTime)
+                return map.AsyncTime()?.DesiredTimeSpeed == MpTimeSpeed.Hyperspeed;
+
+            if (ConstantTicker.ticking && map == null)
+                return false;
+
+            return global::Multiplayer.Client.AsyncTime.AsyncWorldTimeComp.contextAtHyperspeed;
         }
     }
 

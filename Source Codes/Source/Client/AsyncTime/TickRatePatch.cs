@@ -10,7 +10,7 @@ namespace Multiplayer.Client
         {
             if (Multiplayer.Client == null) return true;
 
-            switch (__instance.CurTimeSpeed, __instance.slower.ForcedNormalSpeed)
+            switch (MpTimeSpeed.GetFrom(__instance), __instance.slower.ForcedNormalSpeed)
             {
                 case (TimeSpeed.Paused, _):
                     __result = 0;

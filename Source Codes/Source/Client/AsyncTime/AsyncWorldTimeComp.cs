@@ -19,7 +19,9 @@ namespace Multiplayer.Client.AsyncTime;
 public class AsyncWorldTimeComp : IExposable, ITickable
 {
     public static bool tickingWorld;
-    private TimeSpeed timeSpeedInt;
+    // World speed at the start of the current world tick/command (read by desync tracing).
+    public static bool contextAtHyperspeed;
+    internal TimeSpeed timeSpeedInt;
 
     public float TimeToTickThrough { get; set; }
 
@@ -48,11 +50,25 @@ public class AsyncWorldTimeComp : IExposable, ITickable
     // Run at the speed of the fastest map or at chosen speed if there are no maps
     public TimeSpeed DesiredTimeSpeed
     {
-        get => !Find.Maps.Any()
-            ? timeSpeedInt
-            : Find.Maps.Select(m => m.AsyncTime())
-                .Where(a => a.ActualRateMultiplier(a.DesiredTimeSpeed) != 0f)
-                .Max(a => a?.DesiredTimeSpeed) ?? TimeSpeed.Paused;
+        get
+        {
+            // Allocation-free version of: max DesiredTimeSpeed over maps that aren't paused
+            // (Paused if all are, timeSpeedInt if there are no maps). Read every world micro-tick.
+            var maps = Find.Maps;
+            if (maps.Count == 0)
+                return timeSpeedInt;
+
+            TimeSpeed? max = null;
+            for (int i = 0; i < maps.Count; i++)
+            {
+                var a = maps[i].AsyncTime();
+                if (a.ActualRateMultiplier(a.DesiredTimeSpeed) == 0f) continue;
+                if (max == null || a.DesiredTimeSpeed > max.Value)
+                    max = a.DesiredTimeSpeed;
+            }
+
+            return max ?? TimeSpeed.Paused;
+        }
         set => timeSpeedInt = value;
     }
 
@@ -87,10 +103,10 @@ public class AsyncWorldTimeComp : IExposable, ITickable
         Scribe_Values.Look(ref timeSpeedInt, "timeSpeed");
         Scribe_Custom.LookULong(ref randState, "randState", 2);
 
-        TimeSpeed timeSpeed = Find.TickManager.CurTimeSpeed;
+        TimeSpeed timeSpeed = MpTimeSpeed.GetFrom(Find.TickManager);
         Scribe_Values.Look(ref timeSpeed, "timeSpeed");
         if (Scribe.mode == LoadSaveMode.LoadingVars)
-            Find.TickManager.CurTimeSpeed = timeSpeed;
+            MpTimeSpeed.SetOn(Find.TickManager, timeSpeed);
 
         if (Scribe.mode == LoadSaveMode.LoadingVars)
             Multiplayer.game.worldComp = new MultiplayerWorldComp(world);
@@ -144,7 +160,10 @@ public class AsyncWorldTimeComp : IExposable, ITickable
 
     public void PreContext()
     {
-        Find.TickManager.CurTimeSpeed = DesiredTimeSpeed;
+        var speed = DesiredTimeSpeed;
+        MpTimeSpeed.SetOn(Find.TickManager, speed);
+        contextAtHyperspeed = speed == MpTimeSpeed.Hyperspeed;
+        SimulationCaches.InvalidateFrameKeyed();
         Rand.PushState();
         Rand.StateCompressed = randState;
 
@@ -217,10 +236,16 @@ public class AsyncWorldTimeComp : IExposable, ITickable
 
             if (cmdType == CommandType.CreateJoinPoint)
             {
+                // Every peer drops its simulation caches here, including standalone peers that
+                // return below without reloading, so they match a peer that loads this join point.
+                SimulationCaches.ClearAll();
+
                 if (Multiplayer.session?.ConnectedToStandaloneServer == true && !TickPatch.currentExecutingCmdIssuedBySelf)
                     return;
 
-                LongEventHandler.QueueLongEvent(CreateJoinPointAndSendIfHost, "MpCreatingJoinPoint", false, null);
+                // Deferred (on every client alike) while a gravship flight is in progress.
+                Patches.GravshipCutsceneSync.RunOrDeferJoinPoint(() =>
+                    LongEventHandler.QueueLongEvent(CreateJoinPointAndSendIfHost, "MpCreatingJoinPoint", false, null));
             }
 
             if (cmdType == CommandType.InitPlayerData)

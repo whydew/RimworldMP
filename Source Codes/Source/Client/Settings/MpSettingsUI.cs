@@ -111,6 +111,8 @@ public static class MpSettingsUI
         if (Prefs.DevMode)
         {
             listing.CheckboxLabeled("Show debug info", ref settings.showDevInfo);
+            listing.CheckboxLabeled("Diagnostic logging (MpLogs/MpDiagnostics.log)", ref settings.diagnosticLogging,
+                "Writes the temporary self-tend and map-load desync diagnostics to a separate file. Leave off for normal play.");
             listing.TextFieldNumericLabeled("Desync radius:  ", ref settings.desyncTracesRadius, ref desyncRadiusBuffer, 1f,
                 200f);
             listing.TextFieldNumericLabeled("Jitted methods:  ", ref settings.jittedMethodsInDesync, ref jittedMethodsBuffer);

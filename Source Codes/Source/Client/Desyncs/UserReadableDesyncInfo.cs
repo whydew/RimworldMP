@@ -197,7 +197,7 @@ namespace Multiplayer.Client
             builder.AppendLine($"Last map state: {sync.mapStates.Select(m => $"{m.mapId}/{m.randomStates.LastOrDefault()}/{m.randomStates.Count}").ToStringSafeEnumerable()}");
             builder.AppendLine($"Last world state: {sync.worldRandomStates.LastOrDefault()}/{sync.worldRandomStates.Count}");
             builder.AppendLine($"Last cmd state: {sync.commandRandomStates.LastOrDefault()}/{sync.commandRandomStates.Count}");
-            builder.AppendLine($"Trace hashes: {sync.desyncStackTraceHashes.Count}");
+            builder.AppendLine($"Trace hashes: {sync.TraceCount} traces in {sync.TraceStepCount} timer steps");
 
             return sync;
         }
