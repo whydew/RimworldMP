@@ -59,11 +59,11 @@ namespace Multiplayer.Client.Comp
 
         public TimeSpeed GetLowestTimeVote(int tickableId, bool excludePaused = false)
         {
-            return (TimeSpeed)playerData.Values
+            return MpTimeSpeed.FromVote(playerData.Values
                 .SelectMany(p => p.AllTimeVotes.GetOrEmpty(tickableId))
                 .Where(v => !excludePaused || v != TimeVote.Paused)
                 .DefaultIfEmpty(TimeVote.Paused)
-                .Min();
+                .Min());
         }
 
         public void ResetAllTimeVotes(int tickableId)

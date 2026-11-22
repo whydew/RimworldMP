@@ -10,7 +10,7 @@ namespace Multiplayer.Client
         {
             if (Multiplayer.Client == null) return true;
 
-            switch (__instance.CurTimeSpeed, __instance.slower.ForcedNormalSpeed)
+            switch (MpTimeSpeed.GetFrom(__instance), __instance.slower.ForcedNormalSpeed)
             {
                 case (TimeSpeed.Paused, _):
                     __result = 0;
@@ -26,6 +26,9 @@ namespace Multiplayer.Client
                     break;
                 case (TimeSpeed.Ultrafast, _):
                     __result = 15;
+                    break;
+                case (MpTimeSpeed.Hyperspeed, _):
+                    __result = MpTimeSpeed.HyperspeedMultiplier;
                     break;
                 default:
                     __result = 1;

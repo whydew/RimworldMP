@@ -53,7 +53,7 @@ public static class MapSetup
         {
             startingMapTicks = Find.TickManager.TicksGame;
             gameStartAbsTick = Find.TickManager.gameStartAbsTick;
-            startingTimeSpeed = Find.TickManager.CurTimeSpeed;
+            startingTimeSpeed = MpTimeSpeed.GetFrom(Find.TickManager);
         }
         else if (startingMapTimeFromBeginning)
         {
@@ -69,7 +69,7 @@ public static class MapSetup
         }
 
         if (!Multiplayer.GameComp.asyncTime)
-            startingTimeSpeed = Find.TickManager.CurTimeSpeed;
+            startingTimeSpeed = MpTimeSpeed.GetFrom(Find.TickManager);
 
         var asyncTimeCompForMap = new AsyncTimeComp(map, gameStartAbsTick)
         {

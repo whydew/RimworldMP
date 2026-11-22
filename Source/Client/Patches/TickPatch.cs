@@ -300,6 +300,7 @@ namespace Multiplayer.Client
         public static void Reset()
         {
             ClearSimulating();
+            MpTimeSpeed.ClearContext();
             Timer = 0;
             tickUntil = 0;
             ticksToRun = 0;

@@ -45,6 +45,8 @@ namespace Multiplayer.Client
                     return 6f;
                 case TimeSpeed.Ultrafast:
                     return 15f;
+                case MpTimeSpeed.Hyperspeed:
+                    return MpTimeSpeed.HyperspeedMultiplier;
                 default:
                     return -1f;
             }

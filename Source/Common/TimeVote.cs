@@ -11,5 +11,8 @@ public enum TimeVote : byte
     PlayerResetTickable,
     PlayerResetGlobal,
     ResetTickable,
-    ResetGlobal
+    ResetGlobal,
+
+    // Replays store votes as bytes, so existing values must keep their positions.
+    Hyperspeed
 }

@@ -254,6 +254,16 @@ public class PacketTest
         deserialized.Should().BeEquivalentTo(original, opts => opts.PreferringRuntimeMemberTypes());
     }
 
+    [TestCase(TimeVote.PlayerResetTickable, 5)]
+    [TestCase(TimeVote.PlayerResetGlobal, 6)]
+    [TestCase(TimeVote.ResetTickable, 7)]
+    [TestCase(TimeVote.ResetGlobal, 8)]
+    [TestCase(TimeVote.Hyperspeed, 9)]
+    public void TimeVoteCommandKeepsItsWireValue(TimeVote vote, int expected)
+    {
+        ByteWriter.GetBytes(vote, ScheduledCommand.Global)[0].Should().Be((byte)expected);
+    }
+
     [Test]
     public async Task SnapshotBinaryRepresentation()
     {

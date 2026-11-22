@@ -211,7 +211,7 @@ namespace Multiplayer.Client
         {
             Find.TickManager.ticksGameInt = ticks;
             Find.TickManager.slower = slower;
-            Find.TickManager.curTimeSpeed = speed;
+            MpTimeSpeed.SetOn(Find.TickManager, speed);
             Find.TickManager.gameStartAbsTick = gameStartAbsTick;
         }
 
@@ -220,7 +220,7 @@ namespace Multiplayer.Client
             return new TimeSnapshot
             {
                 ticks = Find.TickManager.ticksGameInt,
-                speed = Find.TickManager.curTimeSpeed,
+                speed = MpTimeSpeed.GetFrom(Find.TickManager),
                 slower = Find.TickManager.slower,
                 gameStartAbsTick = Find.TickManager.gameStartAbsTick
             };
@@ -237,7 +237,7 @@ namespace Multiplayer.Client
 
             tickManager.ticksGameInt = mapComp.mapTicks;
             tickManager.slower = mapComp.slower;
-            tickManager.CurTimeSpeed = mapComp.DesiredTimeSpeed;
+            MpTimeSpeed.SetOn(tickManager, mapComp.DesiredTimeSpeed);
             tickManager.gameStartAbsTick = mapComp.GameStartAbsTick;
 
             return prev;

@@ -17,7 +17,10 @@ namespace Multiplayer.Client.AsyncTime;
 [HarmonyPatch(typeof(GlobalControlsUtility), nameof(GlobalControlsUtility.DoTimespeedControls))]
 public static class TimeControlPatch
 {
-    private static TimeVote[] GameSpeeds = { TimeVote.Paused, TimeVote.Normal, TimeVote.Fast, TimeVote.Superfast };
+    private static readonly TimeVote[] GameSpeeds =
+    {
+        TimeVote.Paused, TimeVote.Normal, TimeVote.Fast, TimeVote.Superfast, TimeVote.Ultrafast, TimeVote.Hyperspeed
+    };
 
     private static bool ShouldReset => Event.current.shift && Multiplayer.GameComp.IsLowestWins;
 
@@ -27,11 +30,11 @@ public static class TimeControlPatch
             : Multiplayer.AsyncWorldTime;
 
     private static TimeVote CurTimeSpeedGame =>
-        (TimeVote)(Multiplayer.IsReplay ? TickPatch.replayTimeSpeed : Tickable.DesiredTimeSpeed);
+        MpTimeSpeed.ToVote(Multiplayer.IsReplay ? TickPatch.replayTimeSpeed : Tickable.DesiredTimeSpeed);
 
     private static TimeVote? CurTimeSpeedUI =>
-        Multiplayer.IsReplay ? (TimeVote?)TickPatch.replayTimeSpeed :
-        Multiplayer.GameComp.IsLowestWins ? Multiplayer.GameComp.LocalPlayerDataOrNull?.GetTimeVoteOrNull(Tickable.TickableId) : (TimeVote?)Tickable.DesiredTimeSpeed;
+        Multiplayer.IsReplay ? MpTimeSpeed.ToVote(TickPatch.replayTimeSpeed) :
+        Multiplayer.GameComp.IsLowestWins ? Multiplayer.GameComp.LocalPlayerDataOrNull?.GetTimeVoteOrNull(Tickable.TickableId) : MpTimeSpeed.ToVote(Tickable.DesiredTimeSpeed);
 
     static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> insts)
     {
@@ -53,8 +56,13 @@ public static class TimeControlPatch
 
     static void ModifyRect(ref Rect timerRect)
     {
+        if (Multiplayer.Client == null) return;
+
+        // The vanilla row reserves four button widths.
+        timerRect.xMin -= TimeControls.TimeButSize.x * (GameSpeeds.Length - 4);
+
         // Make space for time speed vote summary
-        if (Multiplayer.Client != null && Multiplayer.GameComp.IsLowestWins)
+        if (Multiplayer.GameComp.IsLowestWins)
             timerRect.yMin -= TimeControls.TimeButSize.y;
     }
 
@@ -86,7 +94,7 @@ public static class TimeControlPatch
 
         foreach (var speed in GameSpeeds)
         {
-            if (Widgets.ButtonImage(rect, TexButton.SpeedButtonTextures[(uint)speed]))
+            if (Widgets.ButtonImage(rect, HyperspeedTextures.ForSpeed(MpTimeSpeed.FromVote(speed))))
             {
                 // todo Move the host check to the server?
                 if (ShouldReset && Multiplayer.LocalServer != null)
@@ -111,9 +119,9 @@ public static class TimeControlPatch
         float fastSpeed = Tickable.ActualRateMultiplier(TimeSpeed.Fast);
 
         if (normalSpeed == 0f) // Completely paused
-            Widgets.DrawLineHorizontal(rect.width, rect.height / 2f, rect.width * 3f);
+            Widgets.DrawLineHorizontal(rect.width, rect.height / 2f, rect.width * (GameSpeeds.Length - 1));
         else if (normalSpeed == fastSpeed) // Slowed down
-            Widgets.DrawLineHorizontal(rect.width * 2f, rect.height / 2f, rect.width * 2f);
+            Widgets.DrawLineHorizontal(rect.width * 2f, rect.height / 2f, rect.width * (GameSpeeds.Length - 2));
 
         Widgets.EndGroup();
         GenUI.AbsorbClicksInRect(timerRect);
@@ -149,11 +157,15 @@ public static class TimeControlPatch
             if (KeyBindingDefOf.TimeSpeed_Superfast.KeyDownEvent)
                 SendTimeVote(TimeVote.Superfast);
 
-            if (KeyBindingDefOf.TimeSpeed_Slower.KeyDownEvent && CurTimeSpeedUI != null && CurTimeSpeedUI != TimeVote.Paused)
-                SendTimeVote(CurTimeSpeedUI.Value - 1);
+            if (CurTimeSpeedUI is { } currentVote)
+            {
+                var speed = MpTimeSpeed.FromVote(currentVote);
+                if (KeyBindingDefOf.TimeSpeed_Slower.KeyDownEvent && speed > TimeSpeed.Paused)
+                    SendTimeVote(MpTimeSpeed.ToVote(speed - 1));
 
-            if (KeyBindingDefOf.TimeSpeed_Faster.KeyDownEvent && CurTimeSpeedUI != null && (TimeSpeed)CurTimeSpeedUI < TimeSpeed.Superfast)
-                SendTimeVote(CurTimeSpeedUI.Value + 1);
+                if (KeyBindingDefOf.TimeSpeed_Faster.KeyDownEvent && speed < MpTimeSpeed.Hyperspeed)
+                    SendTimeVote(MpTimeSpeed.ToVote(speed + 1));
+            }
         }
 
         if (Prefs.DevMode)
@@ -194,7 +206,7 @@ public static class TimeControlPatch
     {
         if (!AnyVotes(Tickable.TickableId)) return "";
         var result = "\n";
-        for (var speed = TimeVote.Paused; speed <= TimeVote.Ultrafast; speed++)
+        foreach (var speed in GameSpeeds)
         {
             var players = PlayerVotes(Tickable.TickableId, speed).JoinStringsAtMost();
             if (!players.NullOrEmpty())
@@ -217,7 +229,7 @@ public static class TimeControlPatch
 
             var lowestNotPaused = Multiplayer.GameComp.GetLowestTimeVote(Tickable.TickableId, true);
             if (lowestNotPaused != TimeSpeed.Paused)
-                return (TimeVote)lowestNotPaused;
+                return MpTimeSpeed.ToVote(lowestNotPaused);
         }
 
         if (fromSpeed != null && fromSpeed != TimeVote.Paused)
@@ -234,19 +246,20 @@ public static class TimeControlPatch
 
     private static void SendTimeVote(TimeVote vote)
     {
+        var speed = MpTimeSpeed.FromVote(vote);
         if (Multiplayer.IsReplay)
-            TickPatch.replayTimeSpeed = (TimeSpeed)vote;
+            TickPatch.replayTimeSpeed = speed;
 
         if (vote != CurTimeSpeedUI)
             if (Multiplayer.GameComp.IsLowestWins)
                 Multiplayer.Client.SendCommand(CommandType.TimeSpeedVote, ScheduledCommand.Global, (byte)vote, Tickable.TickableId);
             else
-                MpTimeControls.SendTimeChange(Tickable, (TimeSpeed)vote);
+                MpTimeControls.SendTimeChange(Tickable, speed);
 
         if (Event.current.type == EventType.KeyDown)
             Event.current.Use();
 
-        TimeControls.PlaySoundOf(vote >= TimeVote.PlayerResetTickable ? TimeSpeed.Paused : (TimeSpeed)vote);
+        TimeControls.PlaySoundOf(MpTimeSpeed.ToVanilla(speed));
     }
 
     private static void DoSingleTick()
@@ -461,15 +474,15 @@ static class MpTimeControls
 
     public static void TimeControlButton(Rect button, Color bgColor, ITickable tickable)
     {
-        int speed = (int)tickable.DesiredTimeSpeed;
+        var speed = tickable.DesiredTimeSpeed;
         if (tickable.ActualRateMultiplier(TimeSpeed.Normal) == 0f)
-            speed = 0;
+            speed = TimeSpeed.Paused;
 
         Widgets.DrawRectFast(button, bgColor);
-        if (Widgets.ButtonImage(button, TexButton.SpeedButtonTextures[speed]))
+        if (Widgets.ButtonImage(button, HyperspeedTextures.ForSpeed(speed)))
         {
             int dir = Event.current.button == 0 ? 1 : -1;
-            SendTimeChange(tickable, (TimeSpeed)GenMath.PositiveMod(speed + dir, (int)TimeSpeed.Ultrafast));
+            SendTimeChange(tickable, (TimeSpeed)GenMath.PositiveMod((int)speed + dir, (int)MpTimeSpeed.Hyperspeed + 1));
             Event.current.Use();
         }
     }

@@ -40,6 +40,7 @@ public class AsyncWorldTimeComp : IExposable, ITickable
             TimeSpeed.Fast => 3f,
             TimeSpeed.Superfast => 6f,
             TimeSpeed.Ultrafast => 15f,
+            MpTimeSpeed.Hyperspeed => MpTimeSpeed.HyperspeedMultiplier,
             _ => -1f
         };
     }
@@ -86,10 +87,10 @@ public class AsyncWorldTimeComp : IExposable, ITickable
         Scribe_Values.Look(ref timeSpeedInt, "timeSpeed");
         Scribe_Custom.LookULong(ref randState, "randState", 2);
 
-        TimeSpeed timeSpeed = Find.TickManager.CurTimeSpeed;
+        TimeSpeed timeSpeed = MpTimeSpeed.GetFrom(Find.TickManager);
         Scribe_Values.Look(ref timeSpeed, "timeSpeed");
         if (Scribe.mode == LoadSaveMode.LoadingVars)
-            Find.TickManager.CurTimeSpeed = timeSpeed;
+            MpTimeSpeed.SetOn(Find.TickManager, timeSpeed);
 
         if (Scribe.mode == LoadSaveMode.LoadingVars)
             Multiplayer.game.worldComp = new MultiplayerWorldComp(world);
@@ -143,7 +144,7 @@ public class AsyncWorldTimeComp : IExposable, ITickable
 
     public void PreContext()
     {
-        Find.TickManager.CurTimeSpeed = DesiredTimeSpeed;
+        MpTimeSpeed.SetOn(Find.TickManager, DesiredTimeSpeed);
         Rand.PushState();
         Rand.StateCompressed = randState;
 
@@ -311,7 +312,7 @@ public class AsyncWorldTimeComp : IExposable, ITickable
         int tickableId = data.ReadInt32();
 
         // Update the vote
-        if (vote >= TimeVote.ResetTickable)
+        if (vote is TimeVote.ResetTickable or TimeVote.ResetGlobal)
             Multiplayer.GameComp.playerData.Do(p => p.Value.SetTimeVote(tickableId, vote));
         else if (Multiplayer.GameComp.playerData.GetValueOrDefault(cmd.playerId) is { } playerData)
             playerData.SetTimeVote(tickableId, vote);

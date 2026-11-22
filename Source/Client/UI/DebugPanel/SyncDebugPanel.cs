@@ -450,6 +450,7 @@ namespace Multiplayer.Client.DebugUi
         {
             try
             {
+                var speed = Find.TickManager is { } tickManager ? MpTimeSpeed.GetFrom(tickManager) : TimeSpeed.Paused;
                 DebugLine[] coreLines = [
                     new("Faction Stack:", $"{FactionContext.stack?.Count ?? 0}", Color.white),
                     new("Player Faction:", $"{Faction.OfPlayer?.loadID ?? -1}", Color.white),
@@ -457,7 +458,7 @@ namespace Multiplayer.Client.DebugUi
                     new("Next Thing ID:", $"{Find.UniqueIDsManager?.nextThingID ?? -1}", Color.white),
                     new("Next Job ID:", $"{Find.UniqueIDsManager?.nextJobID ?? -1}", Color.white),
                     new("Game Ticks:", $"{Find.TickManager?.TicksGame ?? -1}", Color.white),
-                    new("Time Speed:", $"{Find.TickManager?.CurTimeSpeed ?? TimeSpeed.Paused}", Color.white)
+                    new("Time Speed:", MpTimeSpeed.ToVote(speed).ToString(), Color.white)
                 ];
 
                 return DrawSection(x, y, width, new("CORE SYSTEM", coreLines));
